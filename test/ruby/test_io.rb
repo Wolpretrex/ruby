@@ -548,8 +548,7 @@ class TestIO < Test::Unit::TestCase
 
   if have_nonblock?
     def test_copy_stream_no_busy_wait
-      # JIT has busy wait on GC. It's hard to test this with JIT.
-      skip "MJIT has busy wait on GC. We can't test this with JIT." if RubyVM::MJIT.enabled?
+      skip "MJIT has busy wait on GC. This sometimes fails with --jit." if RubyVM::MJIT.enabled?
       skip "multiple threads already active" if Thread.list.size > 1
 
       msg = 'r58534 [ruby-core:80969] [Backport #13533]'
@@ -2147,12 +2146,6 @@ class TestIO < Test::Unit::TestCase
   end
 
   def test_autoclose_true_closed_by_finalizer
-    if RubyVM::MJIT.enabled?
-      # This is skipped but this test passes with AOT mode.
-      # At least it should not be a JIT compiler's bug.
-      skip "MJIT worker does IO which is unexpected for this test"
-    end
-
     feature2250 = '[ruby-core:26222]'
     pre = 'ft2250'
     t = Tempfile.new(pre)
@@ -3823,7 +3816,6 @@ __END__
   end
 
   def test_select_leak
-    skip 'MJIT uses too much memory' if RubyVM::MJIT.enabled?
     # avoid malloc arena explosion from glibc and jemalloc:
     env = {
       'MALLOC_ARENA_MAX' => '1',

@@ -198,7 +198,7 @@ AS_CASE([$CC],
     gcc_prefix=gcc- gcc_suffix=`echo "$CC" | sed 's/^gcc//'`
     AC_PROG_CXX(g++${gcc_suffix})],
 [clang-*], [
-    gcc_prefix=clang- gcc_suffix=`echo "$CC" | sed 's/^gcc//'`
+    gcc_prefix=clang- gcc_suffix=`echo "$CC" | sed 's/^clang//'`
     AC_PROG_CXX(clang++${gcc_suffix})],
 [gcc_prefix= gcc_suffix=])
 
@@ -252,19 +252,27 @@ AC_SUBST(OUTFLAG)
 AC_SUBST(COUTFLAG)
 AC_SUBST(CSRCFLAG)
 
+: ${MJIT_CC=$CC}
+AS_IF([test "x$cross_compiling" = xno], [
+    AC_PATH_PROG([MJIT_CC], ${MJIT_CC})
+    AS_CASE([$target_os],
+	[*mingw*], [command -v cygpath && MJIT_CC=`cygpath -ma $MJIT_CC`])
+    shift 2
+    MJIT_CC="$MJIT_CC${1+ }$*"
+])
+
 AS_CASE(["$build_os"],
   [darwin1*.*], [
     # Xcode linker warns for deprecated architecture and wrongly
     # installed TBD files.
     CC_WRAPPER=""
-    AS_IF([! $CC -E -xc - <<SRC >/dev/null 2>&1], [
-	@%:@if defined __APPLE_CC__ && defined __clang_major__ && __clang_major__ >= 10
-	@%:@error ignore linker warnings
-	@%:@endif
-SRC
+    echo 'int main(void) {return 0;}' > conftest.c
+    AS_IF([$CC -framework Foundation -o conftest conftest.c 2>&1 |
+	   grep '^ld: warning: text-based stub file' >/dev/null], [
 	CC_WRAPPER=`cd -P "$srcdir/tool" && pwd`/darwin-cc
 	CC="$CC_WRAPPER $CC"
     ])
+    rm -fr conftest*
   ])
 
 cc_version=
@@ -626,6 +634,9 @@ AS_IF([test "$GCC" = yes], [
     ],
     [
       # ANSI (no XCFLAGS because this is C only)
+      rb_tmp_std_check=`echo $CC $CFLAGS $optflags $warnflags $debugflags | fgrep std= | tr -d  '\015'`
+      AS_IF([test "x$rb_tmp_std_check" = "x"],
+      [
 	for ansi_options in -std=gnu99; do
 	    RUBY_TRY_CFLAGS(${ansi_options}, [
 		RUBY_APPEND_OPTIONS(warnflags, ${ansi_options})
@@ -633,6 +644,7 @@ AS_IF([test "$GCC" = yes], [
 	    ], [ansi_options=])
 	    test "x${ansi_options}" = x || break
 	done
+      ])
     ])
 
     # suppress annoying -Wstrict-overflow warnings
@@ -1019,6 +1031,8 @@ AC_CHECK_HEADERS(malloc_np.h)
 AC_CHECK_HEADERS(net/socket.h)
 AC_CHECK_HEADERS(process.h)
 AC_CHECK_HEADERS(pwd.h)
+AC_CHECK_HEADERS(sanitizer/asan_interface.h)
+AC_CHECK_HEADERS(sanitizer/msan_interface.h)
 AC_CHECK_HEADERS(setjmpex.h)
 AC_CHECK_HEADERS(stdalign.h)
 AC_CHECK_HEADERS(sys/attr.h)
@@ -1348,6 +1362,9 @@ RUBY_FUNC_ATTRIBUTE(__deprecated__("by "@%:@n), DEPRECATED_BY(n,x), rb_cv_func_d
 RUBY_TYPE_ATTRIBUTE(__deprecated__ mesg, DEPRECATED_TYPE(mesg,x), rb_cv_type_deprecated)
 RUBY_FUNC_ATTRIBUTE(__noinline__, NOINLINE)
 RUBY_FUNC_ATTRIBUTE(__always_inline__, ALWAYS_INLINE)
+RUBY_FUNC_ATTRIBUTE(__no_sanitize__(san), NO_SANITIZE(san, x), rb_cv_func_no_sanitize)
+RUBY_FUNC_ATTRIBUTE(__no_sanitize_address__, NO_SANITIZE_ADDRESS)
+RUBY_FUNC_ATTRIBUTE(__no_address_safety_analysis__, NO_ADDRESS_SAFETY_ANALYSIS)
 RUBY_FUNC_ATTRIBUTE(__warn_unused_result__, WARN_UNUSED_RESULT)
 RUBY_FUNC_ATTRIBUTE(__unused__, MAYBE_UNUSED)
 RUBY_FUNC_ATTRIBUTE(__error__ mesg, ERRORFUNC(mesg,x), rb_cv_func___error__)
@@ -1596,6 +1613,9 @@ RUBY_DEFINT(int128_t, 16)
 RUBY_DEFINT(uint128_t, 16, unsigned)
 RUBY_DEFINT(intptr_t, void*)
 RUBY_DEFINT(uintptr_t, void*, unsigned)
+AS_IF([test "x$rb_cv_type_intptr_t" != xno], [
+    RUBY_CHECK_PRINTF_PREFIX(intptr_t, '' ll I64 l, PTR)
+])
 RUBY_DEFINT(ssize_t, size_t, [], [@%:@include <sys/types.h>])	dnl may differ from int, so not use AC_TYPE_SSIZE_T.
 AS_IF([test "x$rb_cv_type_int64_t" != xno], [
     RUBY_CHECK_PRINTF_PREFIX(int64_t, ll I64 l, 64)
@@ -1973,6 +1993,7 @@ AS_IF([test x$rb_cv_builtin___builtin_choose_expr = xyes], [
     ])
 ])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_types_compatible_p, [__builtin_types_compatible_p(int, int)])
+RUBY_CHECK_BUILTIN_FUNC(__builtin_trap, [__builtin_trap()])
 
 AS_IF([test "$ac_cv_func_qsort_r" != no], [
   AC_CACHE_CHECK(whether qsort_r is GNU version, rb_cv_gnu_qsort_r,
@@ -2508,6 +2529,11 @@ AS_IF([test "$rb_cv_binary_elf" = yes], [
   ])
 ])
 
+AC_CHECK_HEADERS([mach-o/loader.h])
+AS_IF([test "$ac_cv_header_mach_o_loader_h" = yes], [
+  AC_LIBOBJ([addr2line])
+])
+
 AS_CASE(["$target_os"],
 [linux* | gnu* | k*bsd*-gnu | bsdi* | kopensolaris*-gnu], [
     AS_IF([test "$rb_cv_binary_elf" = no], [
@@ -2521,7 +2547,8 @@ AC_SUBST(DLDFLAGS)dnl
 AC_SUBST(ARCH_FLAG)dnl
 AC_SUBST(MJIT_HEADER_FLAGS)dnl
 AC_SUBST(MJIT_HEADER_INSTALL_DIR)dnl
-AC_SUBST(MJIT_CC, [${MJIT_CC-'$(CC)'}])dnl
+AC_SUBST(MJIT_CC)dnl
+AC_SUBST(MJIT_CFLAGS, [${MJIT_CFLAGS-"-w ${orig_cflags}"}])dnl
 AC_SUBST(MJIT_OPTFLAGS, [${MJIT_OPTFLAGS-'$(optflags)'}])dnl
 AC_SUBST(MJIT_DEBUGFLAGS, [${MJIT_DEBUGFLAGS-'$(debugflags)'}])dnl
 AC_SUBST(MJIT_LDSHARED)dnl
@@ -2631,6 +2658,7 @@ AS_IF([test "$with_dln_a_out" != yes], [
 			])
 			rb_cv_dlopen=yes],
 	[darwin*], [	: ${LDSHARED='$(CC) -dynamic -bundle'}
+			: ${DLDSHARED='$(CC) -dynamiclib'}
 			: ${LDFLAGS=""}
 			: ${LIBPATHENV=DYLD_FALLBACK_LIBRARY_PATH}
 			: ${PRELOADENV=DYLD_INSERT_LIBRARIES}
@@ -3043,7 +3071,7 @@ AC_ARG_WITH(soname,
 	    [RUBY_SO_NAME='$(RUBY_BASE_NAME)'])
 	])
 
-LIBRUBY_LDSHARED=$LDSHARED
+LIBRUBY_LDSHARED=${DLDSHARED=${LDSHARED}}
 LIBRUBY_DLDFLAGS=$DLDFLAGS
 LIBRUBY_SO='lib$(RUBY_SO_NAME).$(SOEXT).$(RUBY_PROGRAM_VERSION)'
 LIBRUBY_SONAME='lib$(RUBY_SO_NAME).$(SOEXT).$(RUBY_API_VERSION)'
@@ -3136,7 +3164,6 @@ AS_CASE("$enable_shared", [yes], [
 	LIBRUBY_SO='lib$(RUBY_SO_NAME).$(SOEXT)'
 	LIBRUBY_SONAME='$(LIBRUBY_SO)'
 	LIBRUBY_ALIASES='lib$(RUBY_INSTALL_NAME).$(SOEXT)'
-	LIBRUBY_LDSHARED='$(CC) -dynamiclib'
 	AS_IF([test "$load_relative" = yes], [
 	    libprefix="@executable_path/../${libdir_basename}"
 	    LIBRUBY_RELATIVE=yes
@@ -3311,6 +3338,17 @@ AC_SUBST(CAPITARGET)
 
 AS_CASE(["$RDOCTARGET:$CAPITARGET"],[nodoc:nodoc],[INSTALLDOC=nodoc],[INSTALLDOC=all])
 AC_SUBST(INSTALLDOC)
+
+AC_ARG_ENABLE(mjit-support,
+        AS_HELP_STRING([--disable-mjit-support], [disable MJIT features]),
+        [MJIT_SUPPORT=$enableval
+         AS_IF([test x"$enable_mjit_support" = "xyes"],
+                 [AC_DEFINE(USE_MJIT, 1)],
+                 [AC_DEFINE(USE_MJIT, 0)])],
+        [MJIT_SUPPORT=yes
+         AC_DEFINE(USE_MJIT, 1)])
+
+AC_SUBST(MJIT_SUPPORT)
 
 AC_ARG_ENABLE(install-static-library,
 	AS_HELP_STRING([--disable-install-static-library], [do not install static ruby library]),
@@ -3552,6 +3590,7 @@ AC_SUBST(LIBRUBYARG_STATIC)
 AC_SUBST(LIBRUBYARG_SHARED)
 AC_SUBST(SOLIBS)
 AC_SUBST(DLDLIBS)
+AC_SUBST(DLDSHARED)
 AC_SUBST(ENABLE_SHARED)
 AC_SUBST(MAINLIBS)
 AC_SUBST(COMMON_LIBS)
@@ -3838,12 +3877,14 @@ PACKAGE=$RUBY_BASE_NAME
 AC_SUBST(PACKAGE)
 AS_MESSAGE([$PACKAGE library version = $ruby_version])
 
-AS_CASE(["$build_os"], [darwin1*.*], [
-    AS_IF([test x"$CC_WRAPPER" != x], [
-	CC="${CC@%:@$CC_WRAPPER }"
-	CPP="${CPP@%:@$CC_WRAPPER }"
-    ])
+AS_IF([test x"$CC_WRAPPER" != x], [
+    CC='$(CC_WRAPPER) '"${CC@%:@$CC_WRAPPER }"
+    CPP='$(CC_WRAPPER) '"${CPP@%:@$CC_WRAPPER }"
+    CC_WRAPPER='$(rubyarchdir)/darwin-cc'
+    XCC_WRAPPER='$(top_srcdir)/tool/darwin-cc'
 ])
+AC_SUBST(CC_WRAPPER, '')
+AC_SUBST(XCC_WRAPPER)
 
 AS_CASE([" $CPP "], [*" $CC "*], [CPP=`echo " $CPP " | sed "s| $CC |"' $(CC) |;s/^ *//;s/  *$//'`])
 
@@ -3973,6 +4014,7 @@ config_summary "debugflags"          "$debugflags"
 config_summary "warnflags"           "$warnflags"
 config_summary "strip command"       "$STRIP"
 config_summary "install doc"         "$install_doc"
+config_summary "MJIT support"        "$MJIT_SUPPORT"
 config_summary "man page type"       "$MANTYPE"
 config_summary "search path"         "$search_path"
 config_summary "static-linked-ext"   ${EXTSTATIC:+"yes"}

@@ -60,6 +60,9 @@ USE_RUBYGEMS = $(USE_RUBYGEMS)
 !if defined(ENABLE_DEBUG_ENV)
 ENABLE_DEBUG_ENV = $(ENABLE_DEBUG_ENV)
 !endif
+!if defined(MJIT_SUPPORT)
+MJIT_SUPPORT = $(MJIT_SUPPORT)
+!endif
 
 # TOOLS
 <<
@@ -235,6 +238,9 @@ MACHINE = x86
 # RFLAGS = -r
 # EXTLIBS =
 CC = cl -nologo
+<<
+	@(for %I in (cl.exe) do @set MJIT_CC=%~$$PATH:I) && (call echo MJIT_CC = "%MJIT_CC:\=/%" -nologo>>$(MAKEFILE))
+	@type << >>$(MAKEFILE)
 
 $(BANG)include $$(srcdir)/win32/Makefile.sub
 <<

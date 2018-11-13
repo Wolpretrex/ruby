@@ -14,6 +14,7 @@
 #include "ruby/util.h"
 #include "id.h"
 #include "symbol.h"
+#include "transient_heap.h"
 
 #include <assert.h>
 
@@ -744,7 +745,8 @@ ary_inject_op(VALUE ary, VALUE init, VALUE op)
         }
     }
     for (; i < RARRAY_LEN(ary); i++) {
-        v = rb_funcallv_public(v, id, 1, &RARRAY_CONST_PTR(ary)[i]);
+        VALUE arg = RARRAY_AREF(ary, i);
+        v = rb_funcallv_public(v, id, 1, &arg);
     }
     return v;
 }
@@ -1170,9 +1172,10 @@ enum_sort_by(VALUE obj)
 	rb_ary_concat(ary, buf);
     }
     if (RARRAY_LEN(ary) > 2) {
-	RARRAY_PTR_USE(ary, ptr,
-		      ruby_qsort(ptr, RARRAY_LEN(ary)/2, 2*sizeof(VALUE),
-				 sort_by_cmp, (void *)ary));
+        rb_ary_transient_heap_evacuate(ary, TRUE); /* should be malloc heap */
+        RARRAY_PTR_USE(ary, ptr,
+                       ruby_qsort(ptr, RARRAY_LEN(ary)/2, 2*sizeof(VALUE),
+                                  sort_by_cmp, (void *)ary));
     }
     if (RBASIC(ary)->klass) {
 	rb_raise(rb_eRuntimeError, "sort_by reentered");

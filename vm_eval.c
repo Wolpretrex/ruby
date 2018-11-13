@@ -644,7 +644,7 @@ rb_make_no_method_exception(VALUE exc, VALUE format, VALUE obj,
     VALUE name = argv[0];
 
     if (!format) {
-	format = rb_fstring_cstr("undefined method `%s' for %s%s%s");
+	format = rb_fstring_lit("undefined method `%s' for %s%s%s");
     }
     if (exc == rb_eNoMethodError) {
 	VALUE args = rb_ary_new4(argc - 1, argv + 1);
@@ -676,17 +676,17 @@ raise_method_missing(rb_execution_context_t *ec, int argc, const VALUE *argv, VA
     stack_check(ec);
 
     if (last_call_status & MISSING_PRIVATE) {
-	format = rb_fstring_cstr("private method `%s' called for %s%s%s");
+	format = rb_fstring_lit("private method `%s' called for %s%s%s");
     }
     else if (last_call_status & MISSING_PROTECTED) {
-	format = rb_fstring_cstr("protected method `%s' called for %s%s%s");
+	format = rb_fstring_lit("protected method `%s' called for %s%s%s");
     }
     else if (last_call_status & MISSING_VCALL) {
-	format = rb_fstring_cstr("undefined local variable or method `%s' for %s%s%s");
+	format = rb_fstring_lit("undefined local variable or method `%s' for %s%s%s");
 	exc = rb_eNameError;
     }
     else if (last_call_status & MISSING_SUPER) {
-	format = rb_fstring_cstr("super: no superclass method `%s' for %s%s%s");
+	format = rb_fstring_lit("super: no superclass method `%s' for %s%s%s");
     }
 
     {
@@ -764,7 +764,7 @@ rb_apply(VALUE recv, ID mid, VALUE args)
 	return ret;
     }
     argv = ALLOCA_N(VALUE, argc);
-    MEMCPY(argv, RARRAY_CONST_PTR(args), VALUE, argc);
+    MEMCPY(argv, RARRAY_CONST_PTR_TRANSIENT(args), VALUE, argc);
     return rb_call(recv, mid, argc, argv, CALL_FCALL);
 }
 
@@ -2009,8 +2009,7 @@ rb_catch_obj(VALUE t, VALUE (*func)(), VALUE data)
 static void
 local_var_list_init(struct local_var_list *vars)
 {
-    vars->tbl = rb_hash_new();
-    RHASH(vars->tbl)->ntbl = st_init_numtable(); /* compare_by_identity */
+    vars->tbl = rb_hash_new_compare_by_id();
     RBASIC_CLEAR_CLASS(vars->tbl);
 }
 
@@ -2036,10 +2035,9 @@ static void
 local_var_list_add(const struct local_var_list *vars, ID lid)
 {
     if (lid && rb_is_local_id(lid)) {
-	/* should skip temporary variable */
-	st_table *tbl = RHASH_TBL_RAW(vars->tbl);
-	st_data_t idx = 0;	/* tbl->num_entries */
-	st_update(tbl, ID2SYM(lid), local_var_list_update, idx);
+        /* should skip temporary variable */
+        st_data_t idx = 0;	/* tbl->num_entries */
+        rb_hash_stlike_update(vars->tbl, ID2SYM(lid), local_var_list_update, idx);
     }
 }
 

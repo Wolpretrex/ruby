@@ -1,6 +1,7 @@
 # sync following repositories to ruby repository
 #
 # * https://github.com/rubygems/rubygems
+# * https://github.com/bundler/bundler
 # * https://github.com/ruby/rdoc
 # * https://github.com/flori/json
 # * https://github.com/ruby/psych
@@ -39,6 +40,7 @@
 
 $repositories = {
   rubygems: 'rubygems/rubygems',
+  bundler: 'bundler/bundler',
   rdoc: 'ruby/rdoc',
   json: 'flori/json',
   psych: 'ruby/psych',
@@ -76,12 +78,6 @@ $repositories = {
 }
 
 def sync_default_gems(gem)
-  author, repository = $repositories[gem.to_sym].split('/')
-  unless File.exist?("../../#{author}/#{repository}")
-    `mkdir -p ../../#{author}`
-    `git clone git@github.com:#{author}/#{repository}.git ../../#{author}/#{repository}`
-  end
-
   puts "Sync #{$repositories[gem.to_sym]}"
 
   case gem
@@ -89,6 +85,14 @@ def sync_default_gems(gem)
     `rm -rf lib/rubygems* test/rubygems`
     `cp -r ../../rubygems/rubygems/lib/rubygems* ./lib`
     `cp -r ../../rubygems/rubygems/test/rubygems ./test`
+  when "bundler"
+    `rm -rf lib/bundler* bin/bundler bin/bundle bin/bundle_ruby spec/bundler man/bundle* man/gemfile*`
+    `cp -r ../../bundler/bundler/lib/bundler* ./lib`
+    `cp -r ../../bundler/bundler/exe/bundle* ./bin`
+    `cp ../../bundler/bundler/bundler.gemspec ./lib`
+    `cp -r ../../bundler/bundler/spec spec/bundler`
+    `cp -r ../../bundler/bundler/man/*.{1,5,1\.txt,5\.txt,ronn} ./man`
+    `rm -rf spec/bundler/support/artifice/vcr_cassettes`
   when "rdoc"
     `rm -rf lib/rdoc* test/rdoc`
     `cp -rf ../rdoc/lib/rdoc* ./lib`
@@ -122,6 +126,7 @@ def sync_default_gems(gem)
     `cp -rf ../fiddle/test/fiddle test`
     `cp -f ../fiddle/fiddle.gemspec ext/fiddle`
     `git checkout ext/fiddle/depend`
+    `rm -rf ext/fiddle/lib/fiddle.{bundle,so}`
   when "stringio"
     `rm -rf ext/stringio test/stringio`
     `cp -rf ../stringio/ext/stringio ext`
@@ -217,8 +222,35 @@ def sync_lib(repo)
   `cp -f ../#{repo}/#{repo}.gemspec #{gemspec}`
 end
 
-if ARGV[0]
-  sync_default_gems(ARGV[0])
-else
+def update_default_gems(gem)
+  author, repository = $repositories[gem.to_sym].split('/')
+
+  unless File.exist?("../../#{author}/#{repository}")
+    `mkdir -p ../../#{author}`
+    `git clone git@github.com:#{author}/#{repository}.git ../../#{author}/#{repository}`
+  end
+
+  Dir.chdir("../../#{author}/#{repository}") do
+    unless `git remote`.match(/ruby\-core/)
+      `git remote add ruby-core git@github.com:ruby/ruby.git`
+      `git fetch ruby-core`
+      `git co ruby-core/trunk`
+      `git branch ruby-core`
+    end
+    `git co ruby-core`
+    `git fetch ruby-core trunk`
+    `git rebase ruby-core/trunk`
+    `git co master`
+    `git stash`
+    `git pull --rebase`
+  end
+end
+
+case ARGV[0]
+when "up"
+  $repositories.keys.each{|gem| update_default_gems(gem.to_s)}
+when "all"
   $repositories.keys.each{|gem| sync_default_gems(gem.to_s)}
+else
+  sync_default_gems(ARGV[0])
 end

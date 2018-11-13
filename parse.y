@@ -201,7 +201,10 @@ struct parser_params {
 	const char *pcur;
 	const char *pend;
 	const char *ptok;
-	long gets_ptr;
+	union {
+	    long ptr;
+	    VALUE (*call)(VALUE, int);
+	} gets_;
 	enum lex_state_e state;
 	/* track the nest level of any parens "()[]{}" */
 	int paren_nest;
@@ -222,7 +225,7 @@ struct parser_params {
     struct local_vars *lvtbl;
     int line_count;
     int ruby_sourceline;	/* current line no. */
-    char *ruby_sourcefile; /* current source file */
+    const char *ruby_sourcefile; /* current source file */
     VALUE ruby_sourcefile_string;
     rb_encoding *enc;
     token_info *token_info;
@@ -234,6 +237,7 @@ struct parser_params {
     ID cur_arg;
 
     rb_ast_t *ast;
+    int node_id;
 
     unsigned int command_start:1;
     unsigned int eofp: 1;
@@ -338,6 +342,14 @@ static NODE* node_newnode(struct parser_params *, enum node_type, VALUE, VALUE, 
 #define rb_node_newnode(type, a1, a2, a3, loc) node_newnode(p, (type), (a1), (a2), (a3), (loc))
 
 static NODE *nd_set_loc(NODE *nd, const YYLTYPE *loc);
+
+static int
+parser_get_node_id(struct parser_params *p)
+{
+    int node_id = p->node_id;
+    p->node_id++;
+    return node_id;
+}
 
 #ifndef RIPPER
 static inline void
@@ -1351,7 +1363,7 @@ command		: fcall command_args       %prec tLOWEST
 		    {
 		    /*%%%*/
 			$1->nd_args = $2;
-			nd_set_last_loc($1, nd_last_loc($2));
+			nd_set_last_loc($1, @2.end_pos);
 			$$ = $1;
 		    /*% %*/
 		    /*% ripper: command!($1, $2) %*/
@@ -1363,7 +1375,7 @@ command		: fcall command_args       %prec tLOWEST
 			$1->nd_args = $2;
 			$$ = method_add_block(p, $1, $3, &@$);
 			fixpos($$, $1);
-			nd_set_last_loc($1, nd_last_loc($2));
+			nd_set_last_loc($1, @2.end_pos);
 		    /*% %*/
 		    /*% ripper: method_add_block!(command!($1, $2), $3) %*/
 		    }
@@ -2443,6 +2455,9 @@ primary		: literal
 		  lambda
 		    {
 			$$ = $3;
+                    /*%%%*/
+                        nd_set_first_loc($$, @1.beg_pos);
+                    /*% %*/
 		    }
 		| k_if expr_value then
 		  compstmt
@@ -3129,9 +3144,12 @@ lambda		:   {
 			p->lex.lpar_beg = $<num>2;
 			CMDARG_POP();
 		    /*%%%*/
-			$$ = NEW_LAMBDA($3, $5, &@$);
-			nd_set_line($$->nd_body, @5.end_pos.lineno);
-			nd_set_line($$, @3.end_pos.lineno);
+                        {
+                            YYLTYPE loc = code_loc_gen(&@3, &@5);
+                            $$ = NEW_LAMBDA($3, $5, &loc);
+                            nd_set_line($$->nd_body, @5.end_pos.lineno);
+                            nd_set_line($$, @3.end_pos.lineno);
+                        }
 		    /*% %*/
 		    /*% ripper: lambda!($3, $5) %*/
 			dyna_pop(p, $<vars>1);
@@ -4858,7 +4876,7 @@ yycompile0(VALUE arg)
     struct parser_params *p = (struct parser_params *)arg;
     VALUE cov = Qfalse;
 
-    if (!compile_for_eval && rb_safe_level() == 0) {
+    if (!compile_for_eval && rb_safe_level() == 0 && !NIL_P(p->ruby_sourcefile_string)) {
 	p->debug_lines = debug_lines(p->ruby_sourcefile_string);
 	if (p->debug_lines && p->ruby_sourceline > 0) {
 	    VALUE str = STR_NEW0();
@@ -4918,8 +4936,14 @@ static rb_ast_t *
 yycompile(VALUE vparser, struct parser_params *p, VALUE fname, int line)
 {
     rb_ast_t *ast;
-    p->ruby_sourcefile_string = rb_str_new_frozen(fname);
-    p->ruby_sourcefile = StringValueCStr(fname);
+    if (NIL_P(fname)) {
+	p->ruby_sourcefile_string = Qnil;
+	p->ruby_sourcefile = "(none)";
+    }
+    else {
+	p->ruby_sourcefile_string = rb_str_new_frozen(fname);
+	p->ruby_sourcefile = StringValueCStr(fname);
+    }
     p->ruby_sourceline = line - 1;
 
     p->ast = ast = rb_ast_new();
@@ -4950,14 +4974,14 @@ lex_get_str(struct parser_params *p, VALUE s)
     beg = RSTRING_PTR(s);
     len = RSTRING_LEN(s);
     start = beg;
-    if (p->lex.gets_ptr) {
-	if (len == p->lex.gets_ptr) return Qnil;
-	beg += p->lex.gets_ptr;
-	len -= p->lex.gets_ptr;
+    if (p->lex.gets_.ptr) {
+	if (len == p->lex.gets_.ptr) return Qnil;
+	beg += p->lex.gets_.ptr;
+	len -= p->lex.gets_.ptr;
     }
     end = memchr(beg, '\n', len);
     if (end) len = ++end - beg;
-    p->lex.gets_ptr += len;
+    p->lex.gets_.ptr += len;
     return rb_str_subseq(s, beg - start, len);
 }
 
@@ -4988,7 +5012,7 @@ parser_compile_string(VALUE vparser, VALUE fname, VALUE s, int line)
     TypedData_Get_Struct(vparser, struct parser_params, &parser_data_type, p);
 
     p->lex.gets = lex_get_str;
-    p->lex.gets_ptr = 0;
+    p->lex.gets_.ptr = 0;
     p->lex.input = rb_str_new_frozen(s);
     p->lex.pbeg = p->lex.pcur = p->lex.pend = 0;
 
@@ -5060,6 +5084,27 @@ rb_parser_compile_file_path(VALUE vparser, VALUE fname, VALUE file, int start)
 
     p->lex.gets = lex_io_gets;
     p->lex.input = file;
+    p->lex.pbeg = p->lex.pcur = p->lex.pend = 0;
+
+    return yycompile(vparser, p, fname, start);
+}
+
+static VALUE
+lex_generic_gets(struct parser_params *p, VALUE input)
+{
+    return (*p->lex.gets_.call)(input, p->line_count);
+}
+
+rb_ast_t*
+rb_parser_compile_generic(VALUE vparser, VALUE (*lex_gets)(VALUE, int), VALUE fname, VALUE input, int start)
+{
+    struct parser_params *p;
+
+    TypedData_Get_Struct(vparser, struct parser_params, &parser_data_type, p);
+
+    p->lex.gets = lex_generic_gets;
+    p->lex.gets_.call = lex_gets;
+    p->lex.input = input;
     p->lex.pbeg = p->lex.pcur = p->lex.pend = 0;
 
     return yycompile(vparser, p, fname, start);
@@ -6128,12 +6173,14 @@ heredoc_dedent(struct parser_params *p, NODE *root)
 	    return 0;
 	}
 	else {
+	    NODE *end = node->nd_end;
 	    node = prev_node->nd_next = node->nd_next;
 	    if (!node) {
 		if (nd_type(prev_node) == NODE_DSTR)
 		    nd_set_type(prev_node, NODE_STR);
 		break;
 	    }
+	    node->nd_end = end;
 	    goto next_str;
 	}
 
@@ -8286,6 +8333,7 @@ node_newnode(struct parser_params *p, enum node_type type, VALUE a0, VALUE a1, V
     rb_node_init(n, type, a0, a1, a2);
 
     nd_set_loc(n, loc);
+    nd_set_node_id(n, parser_get_node_id(p));
     return n;
 }
 
@@ -8698,7 +8746,14 @@ gettable(struct parser_params *p, ID id, const YYLTYPE *loc)
 	return NEW_FALSE(loc);
       case keyword__FILE__:
 	WARN_LOCATION("__FILE__");
-	node = NEW_STR(add_mark_object(p, rb_str_dup(p->ruby_sourcefile_string)), loc);
+	{
+	    VALUE file = p->ruby_sourcefile_string;
+	    if (NIL_P(file))
+		file = rb_str_new(0, 0);
+	    else
+		file = rb_str_dup(file);
+	    node = NEW_STR(add_mark_object(p, file), loc);
+	}
 	return node;
       case keyword__LINE__:
 	WARN_LOCATION("__LINE__");
@@ -9214,7 +9269,6 @@ shadowing_lvar_0(struct parser_params *p, ID name)
 	    yyerror0("duplicated argument name");
 	}
 	else if (dvar_defined(p, name) || local_id(p, name)) {
-	    rb_warning1("shadowing outer local variable - %"PRIsWARN, rb_id2str(name));
 	    vtable_add(p->lvtbl->vars, name);
 	    if (p->lvtbl->used) {
 		vtable_add(p->lvtbl->used, (ID)p->ruby_sourceline | LVAR_USED);
@@ -10767,6 +10821,7 @@ parser_initialize(struct parser_params *p)
     p->command_start = TRUE;
     p->ruby_sourcefile_string = Qnil;
     p->lex.lpar_beg = -1; /* make lambda_beginning_p() == FALSE at first */
+    p->node_id = 0;
 #ifdef RIPPER
     p->delayed = Qnil;
     p->result = Qnil;
@@ -11306,12 +11361,6 @@ ripper_initialize(int argc, VALUE *argv, VALUE self)
 
     return Qnil;
 }
-
-struct ripper_args {
-    struct parser_params *p;
-    int argc;
-    VALUE *argv;
-};
 
 static VALUE
 ripper_parse0(VALUE parser_v)

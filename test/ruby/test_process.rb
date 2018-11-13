@@ -263,7 +263,7 @@ class TestProcess < Test::Unit::TestCase
     }
   end
 
-  MANDATORY_ENVS = %w[RUBYLIB]
+  MANDATORY_ENVS = %w[RUBYLIB MJIT_SEARCH_BUILD_DIR]
   case RbConfig::CONFIG['target_os']
   when /linux/
     MANDATORY_ENVS << 'LD_PRELOAD'
@@ -273,6 +273,9 @@ class TestProcess < Test::Unit::TestCase
     MANDATORY_ENVS.concat(ENV.keys.grep(/\A__CF_/))
   end
   if e = RbConfig::CONFIG['LIBPATHENV']
+    MANDATORY_ENVS << e
+  end
+  if e = RbConfig::CONFIG['PRELOADENV'] and !e.empty?
     MANDATORY_ENVS << e
   end
   PREENVARG = ['-e', "%w[#{MANDATORY_ENVS.join(' ')}].each{|e|ENV.delete(e)}"]
@@ -1614,7 +1617,7 @@ class TestProcess < Test::Unit::TestCase
       Process.wait pid
       assert sig_r.wait_readable(5), 'self-pipe not readable'
     end
-    if RubyVM::MJIT.enabled?  # MJIT may trigger extra SIGCHLD
+    if RubyVM::MJIT.enabled? # checking -DMJIT_FORCE_ENABLE. It may trigger extra SIGCHLD.
       assert_equal [true], signal_received.uniq, "[ruby-core:19744]"
     else
       assert_equal [true], signal_received, "[ruby-core:19744]"

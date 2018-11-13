@@ -570,6 +570,24 @@ rb_obj_size(VALUE self, VALUE args, VALUE obj)
  *     3.next.then {|x| x**x }.to_s             #=> "256"
  *     "my string".yield_self {|s| s.upcase }   #=> "MY STRING"
  *
+ *  Good usage for +yield_self+ is value piping in method chains:
+ *
+ *     require 'open-uri'
+ *     require 'json'
+ *
+ *     construct_url(arguments).
+ *       yield_self {|url| open(url).read }.
+ *       yield_self {|response| JSON.parse(response) }
+ *
+ *  When called without block, the method returns +Enumerator+,
+ *  which can be used, for example, for conditional
+ *  circuit-breaking:
+ *
+ *     # meets condition, no-op
+ *     1.yield_self.detect(&:odd?)            # => 1
+ *     # does not meet condition, drop value
+ *     2.yield_self.detect(&:odd?)            # => nil
+ *
  */
 
 static VALUE
@@ -3037,7 +3055,8 @@ rb_check_convert_type_with_id(VALUE val, int type, const char *tname, ID method)
 #define try_to_int(val, mid, raise) \
     convert_type_with_id(val, "Integer", mid, raise, -1)
 
-static VALUE
+ALWAYS_INLINE(static VALUE rb_to_integer(VALUE val, const char *method, ID mid));
+static inline VALUE
 rb_to_integer(VALUE val, const char *method, ID mid)
 {
     VALUE v;

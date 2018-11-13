@@ -63,12 +63,27 @@ if defined?(WIN32OLE_EVENT)
         @sql = "SELECT * FROM __InstanceModificationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_LocalTime'"
       end
 
-      def message_loop
+      def message_loop(watch_ivar = nil)
+        if watch_ivar
+          orig_ivar = instance_variable_get(watch_ivar)
+        end
+
         2.times do
           WIN32OLE_EVENT.message_loop
           sleep 1
         end
-        sleep 1
+
+        if watch_ivar
+          # wait until event is proceeded
+          tries = 0
+          while tries < 5 && instance_variable_get(watch_ivar) == orig_ivar
+            seconds = 2 ** tries # sleep at most 31s in total
+            $stderr.puts "test_win32ole_event.rb: retrying and sleeping #{seconds}s until #{watch_ivar} is changed from #{orig_ivar.inspect}..."
+            WIN32OLE_EVENT.message_loop
+            sleep(seconds)
+            tries += 1
+          end
+        end
       end
 
       def default_handler(event, *args)
@@ -102,14 +117,17 @@ if defined?(WIN32OLE_EVENT)
           message_loop
           GC.start
         end
-        assert_match(/OnObjectReady/, @event)
+
+        # @event randomly becomes "OnCompleted" here. Try to wait until it matches.
+        # https://ci.appveyor.com/project/ruby/ruby/builds/19963142/job/8gaxepksa0i3b998
+        assert_match_with_retries(/OnObjectReady/, :@event)
       end
 
       def test_on_event
         exec_notification_query_async
         ev = WIN32OLE_EVENT.new(@sws, 'ISWbemSinkEvents')
         ev.on_event {|*args| default_handler(*args)}
-        message_loop
+        message_loop(:@event)
         assert_match(/OnObjectReady/, @event)
       end
 
@@ -131,6 +149,19 @@ if defined?(WIN32OLE_EVENT)
           skip "No administrator privilege?"
         end
         raise
+      end
+
+      def assert_match_with_retries(regexp, ivarname)
+        ivar = instance_variable_get(ivarname)
+
+        tries = 0
+        while tries < 5 && !ivar.match(regexp)
+          $stderr.puts "test_win32ole_event.rb: retrying until #{ivarname} matches #{regexp} (tries: #{tries})..."
+          sleep(2 ** tries) # sleep at most 31s in total
+          ivar = instance_variable_get(ivarname)
+        end
+
+        assert_match(regexp, ivar)
       end
     end
   end

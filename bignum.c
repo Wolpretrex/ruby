@@ -616,8 +616,12 @@ static int
 bytes_2comp(unsigned char *buf, size_t len)
 {
     size_t i;
-    for (i = 0; i < len; i++)
-        buf[i] = ~buf[i];
+    for (i = 0; i < len; i++) {
+        signed char c = buf[i];
+        signed int d = ~c;
+        unsigned int e = d & 0xFF;
+        buf[i] = e;
+    }
     for (i = 0; i < len; i++) {
         buf[i]++;
         if (buf[i] != 0)
@@ -2583,10 +2587,9 @@ bigdivrem_single1(BDIGIT *qds, const BDIGIT *xds, size_t xn, BDIGIT x_higher_bdi
         size_t i;
         BDIGIT_DBL t2;
         t2 = x_higher_bdigit;
-        i = xn;
-        while (i--) {
-            t2 = BIGUP(t2) + xds[i];
-            qds[i] = (BDIGIT)(t2 / y);
+        for (i = 0; i < xn; i++) {
+            t2 = BIGUP(t2) + xds[xn - i - 1];
+            qds[xn - i - 1] = (BDIGIT)(t2 / y);
             t2 %= y;
         }
         return (BDIGIT)t2;
@@ -6211,7 +6214,7 @@ rb_big_pow(VALUE x, VALUE y)
     if (RB_FLOAT_TYPE_P(y)) {
 	d = RFLOAT_VALUE(y);
 	if ((BIGNUM_NEGATIVE_P(x) && !BIGZEROP(x))) {
-	    return rb_dbl_complex_polar(pow(-rb_big2dbl(x), d), d);
+            return rb_dbl_complex_polar_pi(pow(-rb_big2dbl(x), d), d);
 	}
     }
     else if (RB_BIGNUM_TYPE_P(y)) {

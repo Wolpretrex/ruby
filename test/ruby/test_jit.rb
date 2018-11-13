@@ -3,6 +3,8 @@ require 'test/unit'
 require 'tmpdir'
 require_relative '../lib/jit_support'
 
+return if RbConfig::CONFIG["MJIT_SUPPORT"] == 'no'
+
 # Test for --jit option
 class TestJIT < Test::Unit::TestCase
   include JITSupport
@@ -113,6 +115,25 @@ class TestJIT < Test::Unit::TestCase
       @foo = 1
       @foo
     end;
+
+    # optimized getinstancevariable call
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: '33', success_count: 1, min_calls: 2)
+    begin;
+      class A
+        def initialize
+          @a = 1
+          @b = 2
+        end
+
+        def three
+          @a + @b
+        end
+      end
+
+      a = A.new
+      print(a.three) # set ic
+      print(a.three) # inlined ic
+    end;
   end
 
   def test_compile_insn_classvariable
@@ -216,6 +237,10 @@ class TestJIT < Test::Unit::TestCase
 
   def test_compile_insn_newhash
     assert_compile_once('a = 1; { a: a }', result_inspect: '{:a=>1}', insns: %i[newhash])
+  end
+
+  def test_compile_insn_newhashfromarray
+    assert_compile_once('{ a: 1 }', result_inspect: '{:a=>1}', insns: %i[newhashfromarray])
   end
 
   def test_compile_insn_newrange
@@ -419,7 +444,7 @@ class TestJIT < Test::Unit::TestCase
   end
 
   def test_compile_insn_inlinecache
-    assert_compile_once('Struct', result_inspect: 'Struct', insns: %i[getinlinecache setinlinecache])
+    assert_compile_once('Struct', result_inspect: 'Struct', insns: %i[opt_getinlinecache opt_setinlinecache])
   end
 
   def test_compile_insn_once
@@ -438,6 +463,7 @@ class TestJIT < Test::Unit::TestCase
 
   def test_compile_insn_opt_calc
     assert_compile_once('4 + 2 - ((2 * 3 / 2) % 2)', result_inspect: '5', insns: %i[opt_plus opt_minus opt_mult opt_div opt_mod])
+    assert_compile_once('4.0 + 2.0 - ((2.0 * 3.0 / 2.0) % 2.0)', result_inspect: '5.0', insns: %i[opt_plus opt_minus opt_mult opt_div opt_mod])
     assert_compile_once('4 + 2', result_inspect: '6')
   end
 
@@ -641,6 +667,27 @@ class TestJIT < Test::Unit::TestCase
       end
 
       print wrapper(['1'], ['2'])
+    end;
+  end
+
+  def test_inlined_undefined_ivar
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "bbb", success_count: 2, min_calls: 3)
+    begin;
+      class Foo
+        def initialize
+          @a = :a
+        end
+
+        def bar
+          if @b.nil?
+            @b = :b
+          end
+        end
+      end
+
+      print(Foo.new.bar)
+      print(Foo.new.bar)
+      print(Foo.new.bar)
     end;
   end
 

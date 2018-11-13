@@ -132,8 +132,8 @@ class IO
   end
 end
 
-# :stopdoc:
 class Binding
+  # :nodoc:
   def irb
     require 'irb'
     irb
@@ -151,4 +151,6 @@ module Kernel
 
   # suppress redefinition warning
   alias pp pp # :nodoc:
+
+  private :pp
 end

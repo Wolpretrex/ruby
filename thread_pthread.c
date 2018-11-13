@@ -1342,11 +1342,17 @@ ubf_select(void *ptr)
      * in unblock_function_clear.
      */
     if (cur != vm->gvl.timer && cur != sigwait_th) {
-        rb_native_mutex_lock(&vm->gvl.lock);
-        if (!vm->gvl.timer) {
-            rb_thread_wakeup_timer_thread(-1);
+        /*
+         * Double-checked locking above was to prevent nested locking
+         * by the SAME thread.  We use trylock here to prevent deadlocks
+         * between DIFFERENT threads
+         */
+        if (native_mutex_trylock(&vm->gvl.lock) == 0) {
+            if (!vm->gvl.timer) {
+                rb_thread_wakeup_timer_thread(-1);
+            }
+            rb_native_mutex_unlock(&vm->gvl.lock);
         }
-        rb_native_mutex_unlock(&vm->gvl.lock);
     }
 
     ubf_wakeup_thread(th);
@@ -1389,10 +1395,12 @@ static int ubf_threads_empty(void) { return 1; }
 static struct {
     /* pipes are closed in forked children when owner_process does not match */
     int normal[2]; /* [0] == sigwait_fd */
+    int ub_main[2]; /* unblock main thread from native_ppoll_sleep */
 
     /* volatile for signal handler use: */
     volatile rb_pid_t owner_process;
 } signal_self_pipe = {
+    {-1, -1},
     {-1, -1},
 };
 
@@ -1605,37 +1613,36 @@ setup_communication_pipe_internal(int pipes[2])
 # define SET_CURRENT_THREAD_NAME(name) prctl(PR_SET_NAME, name)
 #endif
 
+static VALUE threadptr_invoke_proc_location(rb_thread_t *th);
+
 static void
 native_set_thread_name(rb_thread_t *th)
 {
 #ifdef SET_CURRENT_THREAD_NAME
-    if (!th->first_func && th->first_proc) {
-	VALUE loc;
-	if (!NIL_P(loc = th->name)) {
-	    SET_CURRENT_THREAD_NAME(RSTRING_PTR(loc));
-	}
-	else if (!NIL_P(loc = rb_proc_location(th->first_proc))) {
-	    const VALUE *ptr = RARRAY_CONST_PTR(loc); /* [ String, Integer ] */
-	    char *name, *p;
-	    char buf[16];
-	    size_t len;
-	    int n;
+    VALUE loc;
+    if (!NIL_P(loc = th->name)) {
+        SET_CURRENT_THREAD_NAME(RSTRING_PTR(loc));
+    }
+    else if ((loc = threadptr_invoke_proc_location(th)) != Qnil) {
+        char *name, *p;
+        char buf[16];
+        size_t len;
+        int n;
 
-	    name = RSTRING_PTR(ptr[0]);
-	    p = strrchr(name, '/'); /* show only the basename of the path. */
-	    if (p && p[1])
-		name = p + 1;
+        name = RSTRING_PTR(RARRAY_AREF(loc, 0));
+        p = strrchr(name, '/'); /* show only the basename of the path. */
+        if (p && p[1])
+          name = p + 1;
 
-	    n = snprintf(buf, sizeof(buf), "%s:%d", name, NUM2INT(ptr[1]));
-	    rb_gc_force_recycle(loc); /* acts as a GC guard, too */
+        n = snprintf(buf, sizeof(buf), "%s:%d", name, NUM2INT(RARRAY_AREF(loc, 1)));
+        rb_gc_force_recycle(loc); /* acts as a GC guard, too */
 
-	    len = (size_t)n;
-	    if (len >= sizeof(buf)) {
-		buf[sizeof(buf)-2] = '*';
-		buf[sizeof(buf)-1] = '\0';
-	    }
-	    SET_CURRENT_THREAD_NAME(buf);
-	}
+        len = (size_t)n;
+        if (len >= sizeof(buf)) {
+            buf[sizeof(buf)-2] = '*';
+            buf[sizeof(buf)-1] = '\0';
+        }
+        SET_CURRENT_THREAD_NAME(buf);
     }
 #endif
 }
@@ -1712,10 +1719,12 @@ rb_thread_create_timer_thread(void)
 
     if (owner && owner != current) {
         CLOSE_INVALIDATE_PAIR(signal_self_pipe.normal);
+        CLOSE_INVALIDATE_PAIR(signal_self_pipe.ub_main);
         ubf_timer_invalidate();
     }
 
     if (setup_communication_pipe_internal(signal_self_pipe.normal) < 0) return;
+    if (setup_communication_pipe_internal(signal_self_pipe.ub_main) < 0) return;
 
     if (owner != current) {
         /* validate pipe on this process */
@@ -1839,7 +1848,8 @@ rb_reserved_fd_p(int fd)
 #endif
     if (fd == signal_self_pipe.normal[0] || fd == signal_self_pipe.normal[1])
         goto check_pid;
-
+    if (fd == signal_self_pipe.ub_main[0] || fd == signal_self_pipe.ub_main[1])
+        goto check_pid;
     return 0;
 check_pid:
     if (signal_self_pipe.owner_process == getpid()) /* async-signal-safe */
@@ -1853,6 +1863,7 @@ rb_nativethread_self(void)
     return pthread_self();
 }
 
+#if USE_MJIT
 /* A function that wraps actual worker function, for pthread abstraction. */
 static void *
 mjit_worker(void *arg)
@@ -1884,6 +1895,7 @@ rb_thread_create_mjit_thread(void (*worker_func)(void))
     pthread_attr_destroy(&attr);
     return ret;
 }
+#endif
 
 int
 rb_sigwait_fd_get(const rb_thread_t *th)
@@ -1945,44 +1957,58 @@ ruby_ppoll(struct pollfd *fds, nfds_t nfds,
 #endif
 
 void
-rb_sigwait_sleep(rb_thread_t *th, int sigwait_fd, const struct timespec *ts)
+rb_sigwait_sleep(rb_thread_t *th, int sigwait_fd, const rb_hrtime_t *rel)
 {
     struct pollfd pfd;
+    struct timespec ts;
 
     pfd.fd = sigwait_fd;
     pfd.events = POLLIN;
 
     if (!BUSY_WAIT_SIGNALS && ubf_threads_empty()) {
-        (void)ppoll(&pfd, 1, ts, 0);
+        (void)ppoll(&pfd, 1, rb_hrtime2timespec(&ts, rel), 0);
         check_signals_nogvl(th, sigwait_fd);
     }
     else {
-        rb_hrtime_t rel, end;
+        rb_hrtime_t to = RB_HRTIME_MAX, end;
         int n = 0;
 
-        if (ts) {
-            rel = rb_timespec2hrtime(ts);
-            end = rb_hrtime_add(rb_hrtime_now(), rel);
+        if (rel) {
+            to = *rel;
+            end = rb_hrtime_add(rb_hrtime_now(), to);
         }
         /*
          * tricky: this needs to return on spurious wakeup (no auto-retry).
          * But we also need to distinguish between periodic quantum
          * wakeups, so we care about the result of consume_communication_pipe
+         *
+         * We want to avoid spurious wakeup for Mutex#sleep compatibility
+         * [ruby-core:88102]
          */
         for (;;) {
-            const rb_hrtime_t *sto = sigwait_timeout(th, sigwait_fd, &rel, &n);
-            struct timespec tmp;
+            const rb_hrtime_t *sto = sigwait_timeout(th, sigwait_fd, &to, &n);
 
             if (n) return;
-            n = ppoll(&pfd, 1, rb_hrtime2timespec(&tmp, sto), 0);
+            n = ppoll(&pfd, 1, rb_hrtime2timespec(&ts, sto), 0);
             if (check_signals_nogvl(th, sigwait_fd))
                 return;
             if (n || (th && RUBY_VM_INTERRUPTED(th->ec)))
                 return;
-            if (ts && hrtime_update_expire(&rel, end))
+            if (rel && hrtime_update_expire(&to, end))
                 return;
         }
     }
+}
+
+/*
+ * we need to guarantee wakeups from native_ppoll_sleep because
+ * ubf_select may not be going through ubf_list if other threads
+ * are all sleeping.
+ */
+static void
+ubf_ppoll_sleep(void *ignore)
+{
+    rb_thread_wakeup_timer_thread_fd(signal_self_pipe.ub_main[1]);
 }
 
 /*
@@ -1999,22 +2025,26 @@ static void
 native_ppoll_sleep(rb_thread_t *th, rb_hrtime_t *rel)
 {
     rb_native_mutex_lock(&th->interrupt_lock);
-    th->unblock.func = ubf_select;
-    th->unblock.arg = th;
+    th->unblock.func = ubf_ppoll_sleep;
     rb_native_mutex_unlock(&th->interrupt_lock);
 
     GVL_UNLOCK_BEGIN(th);
     if (!RUBY_VM_INTERRUPTED(th->ec)) {
-        struct pollfd pfd;
+        struct pollfd pfd[2];
         struct timespec ts;
 
-        pfd.fd = signal_self_pipe.normal[0]; /* sigwait_fd */
-        pfd.events = POLLIN;
-        (void)ppoll(&pfd, 1, rb_hrtime2timespec(&ts, rel), 0);
-
+        pfd[0].fd = signal_self_pipe.normal[0]; /* sigwait_fd */
+        pfd[1].fd = signal_self_pipe.ub_main[0];
+        pfd[0].events = pfd[1].events = POLLIN;
+        if (ppoll(pfd, 2, rb_hrtime2timespec(&ts, rel), 0) > 0) {
+            if (pfd[1].revents & POLLIN) {
+                (void)consume_communication_pipe(pfd[1].fd);
+            }
+        }
         /*
-         * do not read the fd, here, let uplevel callers or other threads
-         * that, otherwise we may steal and starve other threads
+         * do not read the sigwait_fd, here, let uplevel callers
+         * or other threads that, otherwise we may steal and starve
+         * other threads
          */
     }
     unblock_function_clear(th);
@@ -2035,8 +2065,7 @@ native_sleep(rb_thread_t *th, rb_hrtime_t *rel)
         GVL_UNLOCK_BEGIN(th);
 
         if (!RUBY_VM_INTERRUPTED(th->ec)) {
-            struct timespec ts;
-            rb_sigwait_sleep(th, sigwait_fd, rb_hrtime2timespec(&ts, rel));
+            rb_sigwait_sleep(th, sigwait_fd, rel);
         }
         else {
             check_signals_nogvl(th, sigwait_fd);

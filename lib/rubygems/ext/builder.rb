@@ -56,6 +56,7 @@ class Gem::Ext::Builder
   end
 
   def self.redirector
+    warn "#{caller[0]}: Use IO.popen(..., err: [:child, :out])"
     '2>&1'
   end
 
@@ -63,17 +64,24 @@ class Gem::Ext::Builder
     verbose = Gem.configuration.really_verbose
 
     begin
-      # TODO use Process.spawn when ruby 1.8 support is dropped.
       rubygems_gemdeps, ENV['RUBYGEMS_GEMDEPS'] = ENV['RUBYGEMS_GEMDEPS'], nil
       if verbose
         puts("current directory: #{Dir.pwd}")
-        puts(command)
-        system(command)
-      else
-        results << "current directory: #{Dir.pwd}"
-        results << command
-        results << `#{command} #{redirector}`
+        p(command)
       end
+      results << "current directory: #{Dir.pwd}"
+      results << (command.respond_to?(:shelljoin) ? command.shelljoin : command)
+
+      redirections = verbose ? {} : {err: [:child, :out]}
+      IO.popen(command, "r", redirections) do |io|
+        if verbose
+          IO.copy_stream(io, $stdout)
+        else
+          results << io.read
+        end
+      end
+    rescue => error
+      raise Gem::InstallError, "#{command_name || class_name} failed#{error.message}"
     ensure
       ENV['RUBYGEMS_GEMDEPS'] = rubygems_gemdeps
     end
@@ -148,9 +156,21 @@ EOF
   def build_extension extension, dest_path # :nodoc:
     results = []
 
+    # FIXME: Determine if this line is necessary and, if so, why.
+    # Notes:
+    # 1. As far as I can tell, this method is only called by +build_extensions+.
+    # 2. The existence of this line implies +extension+ is, or previously was,
+    #    sometimes +false+ or +nil+.
+    # 3. #1 and #2 combined suggests, but does not confirm, that
+    #    +@specs.extensions+ sometimes contained +false+ or +nil+ values.
+    # 4. Nothing seems to explicitly handle +extension+ being empty,
+    #    which makes me wonder both what it should do and what it does.
+    #
+    # - @duckinator
     extension ||= '' # I wish I knew why this line existed
+
     extension_dir =
-      File.expand_path File.join @gem_dir, File.dirname(extension)
+      File.expand_path File.join(@gem_dir, File.dirname(extension))
     lib_dir = File.join @spec.full_gem_path, @spec.raw_require_paths.first
 
     builder = builder_for extension
@@ -200,6 +220,7 @@ EOF
 
     FileUtils.rm_f @spec.gem_build_complete_path
 
+    # FIXME: action at a distance: @ran_rake modified deep in build_extension(). - @duckinator
     @ran_rake = false # only run rake once
 
     @spec.extensions.each do |extension|

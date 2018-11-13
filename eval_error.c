@@ -220,6 +220,29 @@ print_backtrace(const VALUE eclass, const VALUE errat, const VALUE str, int reve
     }
 }
 
+VALUE rb_get_message(VALUE exc);
+
+static void
+show_cause(VALUE errinfo, VALUE str, VALUE highlight, VALUE reverse)
+{
+    VALUE cause = rb_attr_get(errinfo, id_cause);
+    if (!NIL_P(cause)) {
+        volatile VALUE eclass = CLASS_OF(cause);
+        VALUE errat = rb_get_backtrace(cause);
+        VALUE emesg = rb_get_message(cause);
+        if (reverse) {
+            show_cause(cause, str, highlight, reverse);
+            print_backtrace(eclass, errat, str, TRUE);
+            print_errinfo(eclass, errat, emesg, str, highlight!=0);
+        }
+        else {
+            print_errinfo(eclass, errat, emesg, str, highlight!=0);
+            print_backtrace(eclass, errat, str, FALSE);
+            show_cause(cause, str, highlight, reverse);
+        }
+    }
+}
+
 void
 rb_error_write(VALUE errinfo, VALUE emesg, VALUE errat, VALUE str, VALUE highlight, VALUE reverse)
 {
@@ -254,21 +277,21 @@ rb_error_write(VALUE errinfo, VALUE emesg, VALUE errat, VALUE str, VALUE highlig
 	    len = p - (msg = buff);
 	}
 	write_warn2(str, msg, len);
+        show_cause(errinfo, str, highlight, reverse);
 	print_backtrace(eclass, errat, str, TRUE);
 	print_errinfo(eclass, errat, emesg, str, highlight!=0);
     }
     else {
 	print_errinfo(eclass, errat, emesg, str, highlight!=0);
 	print_backtrace(eclass, errat, str, FALSE);
+        show_cause(errinfo, str, highlight, reverse);
     }
 }
-
-VALUE rb_get_message(VALUE exc);
 
 void
 rb_ec_error_print(rb_execution_context_t * volatile ec, volatile VALUE errinfo)
 {
-    volatile int raised_flag = ec->raised_flag;
+    volatile uint8_t raised_flag = ec->raised_flag;
     volatile VALUE errat = Qundef;
     volatile VALUE emesg = Qundef;
 
@@ -292,7 +315,7 @@ rb_ec_error_print(rb_execution_context_t * volatile ec, volatile VALUE errinfo)
     rb_ec_raised_set(ec, raised_flag);
 }
 
-#define undef_mesg_for(v, k) rb_fstring_cstr("undefined"v" method `%1$s' for "k" `%2$s'")
+#define undef_mesg_for(v, k) rb_fstring_lit("undefined"v" method `%1$s' for "k" `%2$s'")
 #define undef_mesg(v) ( \
 	is_mod ? \
 	undef_mesg_for(v, "module") : \
@@ -320,7 +343,7 @@ rb_print_undef_str(VALUE klass, VALUE name)
     rb_name_err_raise_str(undef_mesg(""), klass, name);
 }
 
-#define inaccessible_mesg_for(v, k) rb_fstring_cstr("method `%1$s' for "k" `%2$s' is "v)
+#define inaccessible_mesg_for(v, k) rb_fstring_lit("method `%1$s' for "k" `%2$s' is "v)
 #define inaccessible_mesg(v) ( \
 	is_mod ? \
 	inaccessible_mesg_for(v, "module") : \

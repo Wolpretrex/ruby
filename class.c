@@ -1778,14 +1778,13 @@ rb_define_attr(VALUE klass, const char *name, int read, int write)
 MJIT_FUNC_EXPORTED VALUE
 rb_keyword_error_new(const char *error, VALUE keys)
 {
-    const VALUE *ptr = RARRAY_CONST_PTR(keys);
     long i = 0, len = RARRAY_LEN(keys);
     VALUE error_message = rb_sprintf("%s keyword%.*s", error, len > 1, "s");
 
     if (len > 0) {
 	rb_str_cat_cstr(error_message, ": ");
 	while (1) {
-	    const VALUE k = ptr[i];
+            const VALUE k = RARRAY_AREF(keys, i);
 	    Check_Type(k, T_SYMBOL); /* wrong hash is given to rb_get_kwargs */
 	    rb_str_append(error_message, rb_sym2str(k));
 	    if (++i >= len) break;
@@ -1807,11 +1806,10 @@ NORETURN(static void unknown_keyword_error(VALUE hash, const ID *table, int keyw
 static void
 unknown_keyword_error(VALUE hash, const ID *table, int keywords)
 {
-    st_table *tbl = rb_hash_tbl_raw(hash);
     int i;
     for (i = 0; i < keywords; i++) {
 	st_data_t key = ID2SYM(table[i]);
-	st_delete(tbl, &key, NULL);
+        rb_hash_stlike_delete(hash, &key, NULL);
     }
     rb_keyword_error("unknown", rb_hash_keys(hash));
 }
@@ -1858,7 +1856,7 @@ rb_extract_keywords(VALUE *orighash)
 	*orighash = 0;
 	return hash;
     }
-    st_foreach(rb_hash_tbl_raw(hash), separate_symbol, (st_data_t)&arg);
+    rb_hash_foreach(hash, separate_symbol, (st_data_t)&arg);
     if (arg.kwdhash) {
         if (arg.nonsymkey != Qundef) {
             rb_raise(rb_eArgError, "non-symbol key in keyword arguments: %+"PRIsVALUE,
@@ -1879,8 +1877,8 @@ rb_get_kwargs(VALUE keyword_hash, const ID *table, int required, int optional, V
 
 #define extract_kwarg(keyword, val) \
     (key = (st_data_t)(keyword), values ? \
-     st_delete(rb_hash_tbl_raw(keyword_hash), &key, (val)) : \
-     st_lookup(rb_hash_tbl_raw(keyword_hash), key, (val)))
+     rb_hash_stlike_delete(keyword_hash, &key, (val)) : \
+     rb_hash_stlike_lookup(keyword_hash, key, (val)))
 
     if (NIL_P(keyword_hash)) keyword_hash = 0;
 

@@ -368,12 +368,20 @@ setup_fake_str(struct RString *fake_str, const char *name, long len, int encidx)
     return (VALUE)fake_str;
 }
 
+/*
+ * set up a fake string which refers a static string literal.
+ */
 VALUE
 rb_setup_fake_str(struct RString *fake_str, const char *name, long len, rb_encoding *enc)
 {
     return setup_fake_str(fake_str, name, len, rb_enc_to_index(enc));
 }
 
+/*
+ * rb_fstring_new and rb_fstring_cstr family create or lookup a frozen
+ * shared string which refers a static string literal.  `ptr` must
+ * point a constant string.
+ */
 MJIT_FUNC_EXPORTED VALUE
 rb_fstring_new(const char *ptr, long len)
 {
@@ -482,7 +490,7 @@ search_nonascii(const char *p, const char *e)
 	    }
 	}
 #endif
-#ifdef HAVE_BUILTIN___BUILTIN_ASSUME_ALIGNED
+#if defined(HAVE_BUILTIN___BUILTIN_ASSUME_ALIGNED) &&! UNALIGNED_WORD_ACCESS
 #define aligned_ptr(value) \
         __builtin_assume_aligned((value), sizeof(uintptr_t))
 #else
@@ -795,6 +803,11 @@ VALUE
 rb_str_new_cstr(const char *ptr)
 {
     must_not_null(ptr);
+    /* rb_str_new_cstr() can take pointer from non-malloc-generated
+     * memory regions, and that cannot be detected by the MSAN.  Just
+     * trust the programmer that the argument passed here is a sane C
+     * string. */
+    __msan_unpoison_string(ptr);
     return rb_str_new(ptr, strlen(ptr));
 }
 
@@ -1998,9 +2011,7 @@ rb_str_format_m(VALUE str, VALUE arg)
     VALUE tmp = rb_check_array_type(arg);
 
     if (!NIL_P(tmp)) {
-	VALUE rv = rb_str_format(RARRAY_LENINT(tmp), RARRAY_CONST_PTR(tmp), str);
-	RB_GC_GUARD(tmp);
-	return rv;
+        return rb_str_format(RARRAY_LENINT(tmp), RARRAY_CONST_PTR(tmp), str);
     }
     return rb_str_format(1, &arg, str);
 }
@@ -2967,7 +2978,7 @@ rb_str_concat_literals(size_t num, const VALUE *strary)
 
 /*
  *  call-seq:
- *     str.concat(obj1, obj2,...)          -> str
+ *     str.concat(obj1, obj2, ...)          -> str
  *
  *  Concatenates the given object(s) to <i>str</i>. If an object is an
  *  <code>Integer</code>, it is considered a codepoint and converted
@@ -3087,7 +3098,7 @@ rb_str_concat(VALUE str1, VALUE str2)
 
 /*
  *  call-seq:
- *     str.prepend(other_str1, other_str2,...)  -> str
+ *     str.prepend(other_str1, other_str2, ...)  -> str
  *
  *  Prepend---Prepend the given strings to <i>str</i>.
  *
@@ -4286,7 +4297,7 @@ rb_str_upto_each(VALUE beg, VALUE end, int excl, int (*each)(VALUE, VALUE), VALU
 	}
 	else {
 	    ID op = excl ? '<' : idLE;
-	    VALUE args[2], fmt = rb_fstring_cstr("%.*d");
+	    VALUE args[2], fmt = rb_fstring_lit("%.*d");
 
 	    args[0] = INT2FIX(width);
 	    while (rb_funcall(b, op, 1, e)) {
@@ -4329,7 +4340,7 @@ rb_str_upto_endless_each(VALUE beg, int (*each)(VALUE, VALUE), VALUE arg)
     /* both edges are all digits */
     if (is_ascii_string(beg) && ISDIGIT(RSTRING_PTR(beg)[0]) &&
 	all_digits_p(RSTRING_PTR(beg), RSTRING_LEN(beg))) {
-	VALUE b, args[2], fmt = rb_fstring_cstr("%.*d");
+	VALUE b, args[2], fmt = rb_fstring_lit("%.*d");
 	int width = RSTRING_LENINT(beg);
 	b = rb_str_to_inum(beg, 10, FALSE);
 	if (FIXNUM_P(b)) {
@@ -6675,7 +6686,7 @@ rb_str_downcase_bang(int argc, VALUE *argv, VALUE str)
  *    This option cannot be combined with any other option.
  *  :turkic ::
  *    Full Unicode case mapping, adapted for Turkic languages
- *    (Turkish, Azerbaijani,...). This means that upper case I is mapped to
+ *    (Turkish, Azerbaijani, ...). This means that upper case I is mapped to
  *    lower case dotless i, and so on.
  *  :lithuanian ::
  *    Currently, just full Unicode case mapping. In the future, full Unicode
@@ -8420,10 +8431,13 @@ get_reg_grapheme_cluster(rb_encoding *enc)
     }
     if (!reg_grapheme_cluster) {
 	const OnigUChar source[] = "\\X";
+        OnigErrorInfo einfo;
 	int r = onig_new(&reg_grapheme_cluster, source, source + sizeof(source) - 1,
-			 ONIG_OPTION_DEFAULT, enc, OnigDefaultSyntax, NULL);
+                         ONIG_OPTION_DEFAULT, enc, OnigDefaultSyntax, &einfo);
 	if (r) {
-	    rb_bug("cannot compile grapheme cluster regexp");
+            UChar message[ONIG_MAX_ERROR_MESSAGE_LEN];
+            onig_error_code_to_str(message, r, &einfo);
+            rb_fatal("cannot compile grapheme cluster regexp: %s", (char *)message);
 	}
 	if (encidx == rb_utf8_encindex()) {
 	    reg_grapheme_cluster_utf8 = reg_grapheme_cluster;
@@ -8811,11 +8825,11 @@ lstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
  *  call-seq:
  *     str.lstrip!   -> self or nil
  *
- *  Removes leading whitespace from <i>str</i>, returning <code>nil</code> if no
- *  change was made. See also <code>String#rstrip!</code> and
- *  <code>String#strip!</code>.
+ *  Removes leading whitespace from the receiver.
+ *  Returns the altered receiver, or +nil+ if no change was made.
+ *  See also String#rstrip! and String#strip!.
  *
- *  Refer to <code>strip</code> for the definition of whitespace.
+ *  Refer to String#strip for the definition of whitespace.
  *
  *     "  hello  ".lstrip!  #=> "hello  "
  *     "hello  ".lstrip!    #=> nil
@@ -8851,10 +8865,10 @@ rb_str_lstrip_bang(VALUE str)
  *  call-seq:
  *     str.lstrip   -> new_str
  *
- *  Returns a copy of <i>str</i> with leading whitespace removed. See also
- *  <code>String#rstrip</code> and <code>String#strip</code>.
+ *  Returns a copy of the receiver with leading whitespace removed.
+ *  See also String#rstrip and String#strip.
  *
- *  Refer to <code>strip</code> for the definition of whitespace.
+ *  Refer to String#strip for the definition of whitespace.
  *
  *     "  hello  ".lstrip   #=> "hello  "
  *     "hello".lstrip       #=> "hello"
@@ -8901,11 +8915,11 @@ rstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
  *  call-seq:
  *     str.rstrip!   -> self or nil
  *
- *  Removes trailing whitespace from <i>str</i>, returning <code>nil</code> if
- *  no change was made. See also <code>String#lstrip!</code> and
- *  <code>String#strip!</code>.
+ *  Removes trailing whitespace from the receiver.
+ *  Returns the altered receiver, or +nil+ if no change was made.
+ *  See also String#lstrip! and String#strip!.
  *
- *  Refer to <code>strip</code> for the definition of whitespace.
+ *  Refer to String#strip for the definition of whitespace.
  *
  *     "  hello  ".rstrip!  #=> "  hello"
  *     "  hello".rstrip!    #=> nil
@@ -8940,10 +8954,10 @@ rb_str_rstrip_bang(VALUE str)
  *  call-seq:
  *     str.rstrip   -> new_str
  *
- *  Returns a copy of <i>str</i> with trailing whitespace removed. See also
- *  <code>String#lstrip</code> and <code>String#strip</code>.
+ *  Returns a copy of the receiver with trailing whitespace removed.
+ *  See also String#lstrip and String#strip.
  *
- *  Refer to <code>strip</code> for the definition of whitespace.
+ *  Refer to String#strip for the definition of whitespace.
  *
  *     "  hello  ".rstrip   #=> "  hello"
  *     "hello".rstrip       #=> "hello"
@@ -8967,12 +8981,15 @@ rb_str_rstrip(VALUE str)
 
 /*
  *  call-seq:
- *     str.strip!   -> str or nil
+ *     str.strip!   -> self or nil
  *
- *  Removes leading and trailing whitespace from <i>str</i>. Returns
- *  <code>nil</code> if <i>str</i> was not altered.
+ *  Removes leading and trailing whitespace from the receiver.
+ *  Returns the altered receiver, or +nil+ if there was no change.
  *
- *  Refer to <code>strip</code> for the definition of whitespace.
+ *  Refer to String#strip for the definition of whitespace.
+ *
+ *     "  hello  ".strip!  #=> "hello"
+ *     "hello".strip!      #=> nil
  */
 
 static VALUE
@@ -9008,15 +9025,15 @@ rb_str_strip_bang(VALUE str)
  *  call-seq:
  *     str.strip   -> new_str
  *
- *  Returns a copy of <i>str</i> with leading and trailing whitespace removed.
+ *  Returns a copy of the receiver with leading and trailing whitespace removed.
  *
  *  Whitespace is defined as any of the following characters:
  *  null, horizontal tab, line feed, vertical tab, form feed, carriage return, space.
  *
  *     "    hello    ".strip   #=> "hello"
  *     "\tgoodbye\r\n".strip   #=> "goodbye"
- *     "hello".strip           #=> "hello"
  *     "\x00\t\n\v\f\r ".strip #=> ""
+ *     "hello".strip           #=> "hello"
  */
 
 static VALUE

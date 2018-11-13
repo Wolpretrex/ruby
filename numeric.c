@@ -1083,6 +1083,36 @@ flo_mul(VALUE x, VALUE y)
     }
 }
 
+static bool
+flo_iszero(VALUE f)
+{
+    return RFLOAT_VALUE(f) == 0.0;
+}
+
+static double
+double_div_double(double x, double y)
+{
+    if (LIKELY(y != 0.0)) {
+        return x / y;
+    }
+    else if (x == 0.0) {
+        return nan("");
+    }
+    else {
+        double z = signbit(y) ? -1.0 : 1.0;
+        return x * z * HUGE_VAL;
+    }
+}
+
+MJIT_FUNC_EXPORTED VALUE
+rb_flo_div_flo(VALUE x, VALUE y)
+{
+    double num = RFLOAT_VALUE(x);
+    double den = RFLOAT_VALUE(y);
+    double ret = double_div_double(num, den);
+    return DBL2NUM(ret);
+}
+
 /*
  * call-seq:
  *   float / other  ->  float
@@ -1093,23 +1123,25 @@ flo_mul(VALUE x, VALUE y)
 static VALUE
 flo_div(VALUE x, VALUE y)
 {
-    long f_y;
-    double d;
+    double num = RFLOAT_VALUE(x);
+    double den;
+    double ret;
 
     if (RB_TYPE_P(y, T_FIXNUM)) {
-	f_y = FIX2LONG(y);
-	return DBL2NUM(RFLOAT_VALUE(x) / (double)f_y);
+        den = FIX2LONG(y);
     }
     else if (RB_TYPE_P(y, T_BIGNUM)) {
-	d = rb_big2dbl(y);
-	return DBL2NUM(RFLOAT_VALUE(x) / d);
+        den = rb_big2dbl(y);
     }
     else if (RB_TYPE_P(y, T_FLOAT)) {
-	return DBL2NUM(RFLOAT_VALUE(x) / RFLOAT_VALUE(y));
+        den = RFLOAT_VALUE(y);
     }
     else {
 	return rb_num_coerce_bin(x, y, '/');
     }
+
+    ret = double_div_double(num, den);
+    return DBL2NUM(ret);
 }
 
 /*
@@ -1276,7 +1308,7 @@ rb_float_pow(VALUE x, VALUE y)
 	dx = RFLOAT_VALUE(x);
 	dy = RFLOAT_VALUE(y);
 	if (dx < 0 && dy != round(dy))
-	    return rb_dbl_complex_polar(pow(-dx, dy), dy);
+            return rb_dbl_complex_polar_pi(pow(-dx, dy), dy);
     }
     else {
 	return rb_num_coerce_bin(x, y, idPow);
@@ -1676,10 +1708,7 @@ rb_float_abs(VALUE flt)
 static VALUE
 flo_zero_p(VALUE num)
 {
-    if (RFLOAT_VALUE(num) == 0.0) {
-	return Qtrue;
-    }
-    return Qfalse;
+    return flo_iszero(num) ? Qtrue : Qfalse;
 }
 
 /*
@@ -4056,7 +4085,7 @@ fix_pow(VALUE x, VALUE y)
 	if (a == 1) return DBL2NUM(1.0);
 	{
 	    if (a < 0 && dy != round(dy))
-		return rb_dbl_complex_polar(pow(-(double)a, dy), dy);
+                return rb_dbl_complex_polar_pi(pow(-(double)a, dy), dy);
 	    return DBL2NUM(pow((double)a, dy));
 	}
     }
@@ -4073,6 +4102,22 @@ rb_int_pow(VALUE x, VALUE y)
     }
     else if (RB_TYPE_P(x, T_BIGNUM)) {
 	return rb_big_pow(x, y);
+    }
+    return Qnil;
+}
+
+VALUE
+rb_num_pow(VALUE x, VALUE y)
+{
+    VALUE z = rb_int_pow(x, y);
+    if (!NIL_P(z)) return z;
+    if (RB_FLOAT_TYPE_P(x)) return rb_float_pow(x, y);
+    if (SPECIAL_CONST_P(x)) return Qnil;
+    switch (BUILTIN_TYPE(x)) {
+      case T_COMPLEX:
+        return rb_complex_pow(x, y);
+      case T_RATIONAL:
+        return rb_rational_pow(x, y);
     }
     return Qnil;
 }

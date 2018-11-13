@@ -72,11 +72,11 @@
 #define __EXTENSIONS__ 1
 #endif
 
-#include "internal.h"
 #include "vm_core.h"
 #include "mjit.h"
 #include "gc.h"
 #include "ruby_assert.h"
+#include "ruby/debug.h"
 #include "ruby/thread.h"
 
 #ifdef _WIN32
@@ -110,7 +110,7 @@
 #define dlclose(handle) (!FreeLibrary(handle))
 #define RTLD_NOW  -1
 
-#define waitpid(pid,stat_loc,options) (WaitForSingleObject((HANDLE)(pid), INFINITE), GetExitCodeProcess((HANDLE)(pid), (LPDWORD)(stat_loc)), (pid))
+#define waitpid(pid,stat_loc,options) (WaitForSingleObject((HANDLE)(pid), INFINITE), GetExitCodeProcess((HANDLE)(pid), (LPDWORD)(stat_loc)), CloseHandle((HANDLE)pid), (pid))
 #define WIFEXITED(S) ((S) != STILL_ACTIVE)
 #define WEXITSTATUS(S) (S)
 #define WIFSIGNALED(S) (0)
@@ -139,18 +139,12 @@ struct rb_mjit_unit {
 #endif
     /* Only used by unload_units. Flag to check this unit is currently on stack or not. */
     char used_code_p;
-};
-
-/* Node of linked list in struct rb_mjit_unit_list.
-   TODO: use ccan/list for this */
-struct rb_mjit_unit_node {
-    struct rb_mjit_unit *unit;
-    struct rb_mjit_unit_node *next, *prev;
+    struct list_node unode;
 };
 
 /* Linked list of struct rb_mjit_unit.  */
 struct rb_mjit_unit_list {
-    struct rb_mjit_unit_node *head;
+    struct list_head head;
     int length; /* the list length */
 };
 
@@ -181,11 +175,11 @@ int mjit_call_p = FALSE;
 
 /* Priority queue of iseqs waiting for JIT compilation.
    This variable is a pointer to head unit of the queue. */
-static struct rb_mjit_unit_list unit_queue;
+static struct rb_mjit_unit_list unit_queue = { LIST_HEAD_INIT(unit_queue.head) };
 /* List of units which are successfully compiled. */
-static struct rb_mjit_unit_list active_units;
-/* List of compacted so files which will be deleted in `mjit_finish()`. */
-static struct rb_mjit_unit_list compact_units;
+static struct rb_mjit_unit_list active_units = { LIST_HEAD_INIT(active_units.head) };
+/* List of compacted so files which will be cleaned up by `free_list()` in `mjit_finish()`. */
+static struct rb_mjit_unit_list compact_units = { LIST_HEAD_INIT(compact_units.head) };
 /* The number of so far processed ISEQs, used to generate unique id.  */
 static int current_unit_num;
 /* A mutex for conitionals and critical sections.  */
@@ -318,57 +312,20 @@ mjit_warning(const char *format, ...)
     }
 }
 
-/* Allocate struct rb_mjit_unit_node and return it. This MUST NOT be
-   called inside critical section because that causes deadlock. ZALLOC
-   may fire GC and GC hooks mjit_gc_start_hook that starts critical section. */
-static struct rb_mjit_unit_node *
-create_list_node(struct rb_mjit_unit *unit)
-{
-    struct rb_mjit_unit_node *node = calloc(1, sizeof(struct rb_mjit_unit_node)); /* To prevent GC, don't use ZALLOC */
-    if (node == NULL) return NULL;
-    node->unit = unit;
-    return node;
-}
-
 /* Add unit node to the tail of doubly linked LIST.  It should be not in
    the list before.  */
 static void
-add_to_list(struct rb_mjit_unit_node *node, struct rb_mjit_unit_list *list)
+add_to_list(struct rb_mjit_unit *unit, struct rb_mjit_unit_list *list)
 {
-    /* Append iseq to list */
-    if (list->head == NULL) {
-        list->head = node;
-    }
-    else {
-        struct rb_mjit_unit_node *tail = list->head;
-        while (tail->next != NULL) {
-            tail = tail->next;
-        }
-        tail->next = node;
-        node->prev = tail;
-    }
+    list_add_tail(&list->head, &unit->unode);
     list->length++;
 }
 
 static void
-remove_from_list(struct rb_mjit_unit_node *node, struct rb_mjit_unit_list *list)
+remove_from_list(struct rb_mjit_unit *unit, struct rb_mjit_unit_list *list)
 {
-    if (node->prev && node->next) {
-        node->prev->next = node->next;
-        node->next->prev = node->prev;
-    }
-    else if (node->prev == NULL && node->next) {
-        list->head = node->next;
-        node->next->prev = NULL;
-    }
-    else if (node->prev && node->next == NULL) {
-        node->prev->next = NULL;
-    }
-    else {
-        list->head = NULL;
-    }
+    list_del(&unit->unode);
     list->length--;
-    free(node);
 }
 
 static void
@@ -489,7 +446,7 @@ mjit_valid_class_serial_p(rb_serial_t class_serial)
     int found_p;
 
     CRITICAL_SECTION_START(3, "in valid_class_serial_p");
-    found_p = st_lookup(RHASH_TBL_RAW(valid_class_serials), LONG2FIX(class_serial), NULL);
+    found_p = rb_hash_stlike_lookup(valid_class_serials, LONG2FIX(class_serial), NULL);
     CRITICAL_SECTION_FINISH(3, "in valid_class_serial_p");
     return found_p;
 }
@@ -497,27 +454,26 @@ mjit_valid_class_serial_p(rb_serial_t class_serial)
 /* Return the best unit from list.  The best is the first
    high priority unit or the unit whose iseq has the biggest number
    of calls so far.  */
-static struct rb_mjit_unit_node *
+static struct rb_mjit_unit *
 get_from_list(struct rb_mjit_unit_list *list)
 {
-    struct rb_mjit_unit_node *node, *best = NULL;
-
-    if (list->head == NULL)
-        return NULL;
+    struct rb_mjit_unit *unit = NULL, *next, *best = NULL;
 
     /* Find iseq with max total_calls */
-    for (node = list->head; node != NULL; node = node ? node->next : NULL) {
-        if (node->unit->iseq == NULL) { /* ISeq is GCed. */
-            free_unit(node->unit);
-            remove_from_list(node, list);
+    list_for_each_safe(&list->head, unit, next, unode) {
+        if (unit->iseq == NULL) { /* ISeq is GCed. */
+            remove_from_list(unit, list);
+            free_unit(unit);
             continue;
         }
 
-        if (best == NULL || best->unit->iseq->body->total_calls < node->unit->iseq->body->total_calls) {
-            best = node;
+        if (best == NULL || best->iseq->body->total_calls < unit->iseq->body->total_calls) {
+            best = unit;
         }
     }
-
+    if (best) {
+        remove_from_list(best, list);
+    }
     return best;
 }
 
@@ -565,61 +521,64 @@ COMPILER_WARNING_PUSH
 #ifdef __GNUC__
 COMPILER_WARNING_IGNORED(-Wdeprecated-declarations)
 #endif
-/* Start an OS process of executable PATH with arguments ARGV.  Return
-   PID of the process.
-   TODO: Use the same function in process.c */
+/* Start an OS process of absolute executable path with arguments ARGV.
+   Return PID of the process. */
 static pid_t
-start_process(const char *path, char *const *argv)
+start_process(const char *abspath, char *const *argv)
 {
     pid_t pid;
+    /*
+     * Not calling non-async-signal-safe functions between vfork
+     * and execv for safety
+     */
+    int dev_null = rb_cloexec_open(ruby_null_device, O_WRONLY, 0);
 
     if (mjit_opts.verbose >= 2) {
         int i;
         const char *arg;
 
-        fprintf(stderr, "Starting process: %s", path);
+        fprintf(stderr, "Starting process: %s", abspath);
         for (i = 0; (arg = argv[i]) != NULL; i++)
             fprintf(stderr, " %s", arg);
         fprintf(stderr, "\n");
     }
 #ifdef _WIN32
-    pid = spawnvp(_P_NOWAIT, path, argv);
-#else
     {
-        /*
-         * Not calling non-async-signal-safe functions between vfork
-         * and execv for safety
-         */
-        char fbuf[MAXPATHLEN];
-        const char *abspath = dln_find_exe_r(path, 0, fbuf, sizeof(fbuf));
-        int dev_null;
+        extern HANDLE rb_w32_start_process(const char *abspath, char *const *argv, int out_fd);
+        int out_fd = 0;
+        if (mjit_opts.verbose <= 1) {
+            /* Discard cl.exe's outputs like:
+                 _ruby_mjit_p12u3.c
+                   Creating library C:.../_ruby_mjit_p12u3.lib and object C:.../_ruby_mjit_p12u3.exp */
+            out_fd = dev_null;
+        }
 
-        if (!abspath) {
-            verbose(1, "MJIT: failed to find `%s' in PATH\n", path);
+        pid = (pid_t)rb_w32_start_process(abspath, argv, out_fd);
+        if (pid == 0) {
+            verbose(1, "MJIT: Failed to create process: %s", dlerror());
             return -1;
         }
-        dev_null = rb_cloexec_open(ruby_null_device, O_WRONLY, 0);
-
-        if ((pid = vfork()) == 0) {
-            umask(0077);
-            if (mjit_opts.verbose == 0) {
-                /* CC can be started in a thread using a file which has been
-                   already removed while MJIT is finishing.  Discard the
-                   messages about missing files.  */
-                dup2(dev_null, STDERR_FILENO);
-                dup2(dev_null, STDOUT_FILENO);
-            }
-            (void)close(dev_null);
-            pid = execv(abspath, argv); /* Pid will be negative on an error */
-            /* Even if we successfully found CC to compile PCH we still can
-             fail with loading the CC in very rare cases for some reasons.
-             Stop the forked process in this case.  */
-            verbose(1, "MJIT: Error in execv: %s\n", abspath);
-            _exit(1);
+    }
+#else
+    if ((pid = vfork()) == 0) { /* TODO: reuse some function in process.c */
+        umask(0077);
+        if (mjit_opts.verbose == 0) {
+            /* CC can be started in a thread using a file which has been
+               already removed while MJIT is finishing.  Discard the
+               messages about missing files.  */
+            dup2(dev_null, STDERR_FILENO);
+            dup2(dev_null, STDOUT_FILENO);
         }
         (void)close(dev_null);
+        pid = execv(abspath, argv); /* Pid will be negative on an error */
+        /* Even if we successfully found CC to compile PCH we still can
+         fail with loading the CC in very rare cases for some reasons.
+         Stop the forked process in this case.  */
+        verbose(1, "MJIT: Error in execv: %s", abspath);
+        _exit(1);
     }
 #endif
+    (void)close(dev_null);
     return pid;
 }
 COMPILER_WARNING_POP
@@ -692,7 +651,7 @@ static int
 compile_c_to_so(const char *c_file, const char *so_file)
 {
     int exit_code;
-    const char *files[] = { NULL, NULL, NULL, NULL, NULL, "-link", libruby_pathflag, NULL };
+    const char *files[] = { NULL, NULL, NULL, NULL, NULL, NULL, "-link", libruby_pathflag, NULL };
     char **args;
     char *p, *obj_file;
 
@@ -728,31 +687,19 @@ compile_c_to_so(const char *c_file, const char *so_file)
     p = append_str2(p, c_file, strlen(c_file));
     *p = '\0';
 
+    /* files[5] = "-Fd*.pdb" */
+    files[5] = p = alloca(sizeof(char) * (rb_strlen_lit("-Fd") + strlen(pch_file) + 1));
+    p = append_lit(p, "-Fd");
+    p = append_str2(p, pch_file, strlen(pch_file) - rb_strlen_lit(".pch"));
+    p = append_lit(p, ".pdb");
+    *p = '\0';
+
     args = form_args(5, CC_LDSHARED_ARGS, CC_CODEFLAG_ARGS,
                      files, CC_LIBS, CC_DLDFLAGS_ARGS);
     if (args == NULL)
         return FALSE;
 
-    {
-        /* Discard cl.exe's outputs like:
-             _ruby_mjit_p12u3.c
-               Creating library C:.../_ruby_mjit_p12u3.lib and object C:.../_ruby_mjit_p12u3.exp */
-        int stdout_fileno, orig_fd, dev_null;
-        if (mjit_opts.verbose <= 1) {
-            stdout_fileno = _fileno(stdout);
-            orig_fd = dup(stdout_fileno);
-            dev_null = rb_cloexec_open(ruby_null_device, O_WRONLY, 0);
-
-            dup2(dev_null, stdout_fileno);
-        }
-        exit_code = exec_process(cc_path, args);
-        if (mjit_opts.verbose <= 1) {
-            dup2(orig_fd, stdout_fileno);
-
-            close(orig_fd);
-            close(dev_null);
-        }
-    }
+    exit_code = exec_process(cc_path, args);
     free(args);
 
     if (exit_code == 0) {
@@ -882,8 +829,7 @@ static void
 compact_all_jit_code(void)
 {
 # ifndef _WIN32 /* This requires header transformation but we don't transform header on Windows for now */
-    struct rb_mjit_unit *unit;
-    struct rb_mjit_unit_node *node;
+    struct rb_mjit_unit *unit, *cur = 0;
     double start_time, end_time;
     static const char so_ext[] = DLEXT;
     char so_file[MAXPATHLEN];
@@ -900,8 +846,8 @@ compact_all_jit_code(void)
     o_files = alloca(sizeof(char *) * (active_units.length + 1));
     o_files[active_units.length] = NULL;
     CRITICAL_SECTION_START(3, "in compact_all_jit_code to keep .o files");
-    for (node = active_units.head; node != NULL; node = node->next) {
-        o_files[i] = node->unit->o_file;
+    list_for_each(&active_units.head, cur, unode) {
+        o_files[i] = cur->o_file;
         i++;
     }
 
@@ -925,27 +871,25 @@ compact_all_jit_code(void)
         unit->handle = handle;
 
         /* lazily dlclose handle (and .so file for win32) on `mjit_finish()`. */
-        node = calloc(1, sizeof(struct rb_mjit_unit_node)); /* To prevent GC, don't use ZALLOC */
-        node->unit = unit;
-        add_to_list(node, &compact_units);
+        add_to_list(unit, &compact_units);
 
         if (!mjit_opts.save_temps)
             remove_so_file(so_file, unit);
 
         CRITICAL_SECTION_START(3, "in compact_all_jit_code to read list");
-        for (node = active_units.head; node != NULL; node = node->next) {
+        list_for_each(&active_units.head, cur, unode) {
             void *func;
             char funcname[35]; /* TODO: reconsider `35` */
-            sprintf(funcname, "_mjit%d", node->unit->id);
+            sprintf(funcname, "_mjit%d", cur->id);
 
             if ((func = dlsym(handle, funcname)) == NULL) {
                 mjit_warning("skipping to reload '%s' from '%s': %s", funcname, so_file, dlerror());
                 continue;
             }
 
-            if (node->unit->iseq) { /* Check whether GCed or not */
+            if (cur->iseq) { /* Check whether GCed or not */
                 /* Usage of jit_code might be not in a critical section.  */
-                MJIT_ATOMIC_SET(node->unit->iseq->body->jit_func, (mjit_func_t)func);
+                MJIT_ATOMIC_SET(cur->iseq->body->jit_func, (mjit_func_t)func);
             }
         }
         CRITICAL_SECTION_FINISH(3, "in compact_all_jit_code to read list");
@@ -1030,7 +974,7 @@ compile_prelude(FILE *f)
 /* Compile ISeq in UNIT and return function pointer of JIT-ed code.
    It may return NOT_COMPILED_JIT_ISEQ_FUNC if something went wrong. */
 static mjit_func_t
-convert_unit_to_func(struct rb_mjit_unit *unit)
+convert_unit_to_func(struct rb_mjit_unit *unit, struct rb_call_cache *cc_entries, union iseq_inline_storage_entry *is_entries)
 {
     char c_file_buff[MAXPATHLEN], *c_file = c_file_buff, *so_file, funcname[35]; /* TODO: reconsider `35` */
     int success;
@@ -1087,8 +1031,22 @@ convert_unit_to_func(struct rb_mjit_unit *unit)
         verbose(3, "Waiting wakeup from GC");
         rb_native_cond_wait(&mjit_gc_wakeup, &mjit_engine_mutex);
     }
-    in_jit = TRUE;
+
+    /* We need to check again here because we could've waited on GC above */
+    if (unit->iseq == NULL) {
+        fclose(f);
+        if (!mjit_opts.save_temps)
+            remove_file(c_file);
+        free_unit(unit);
+        in_jit = FALSE; /* just being explicit for return */
+    }
+    else {
+        in_jit = TRUE;
+    }
     CRITICAL_SECTION_FINISH(3, "before mjit_compile to wait GC finish");
+    if (!in_jit) {
+        return (mjit_func_t)NOT_COMPILED_JIT_ISEQ_FUNC;
+    }
 
     {
         VALUE s = rb_iseq_path(unit->iseq);
@@ -1098,7 +1056,7 @@ convert_unit_to_func(struct rb_mjit_unit *unit)
         verbose(2, "start compilation: %s@%s:%d -> %s", label, path, lineno, c_file);
         fprintf(f, "/* %s@%s:%d */\n\n", label, path, lineno);
     }
-    success = mjit_compile(f, unit->iseq->body, funcname);
+    success = mjit_compile(f, unit->iseq->body, funcname, cc_entries, is_entries);
 
     /* release blocking mjit_gc_start_hook */
     CRITICAL_SECTION_START(3, "after mjit_compile to wakeup client for GC");
@@ -1147,19 +1105,51 @@ convert_unit_to_func(struct rb_mjit_unit *unit)
         remove_so_file(so_file, unit);
 
     if ((uintptr_t)func > (uintptr_t)LAST_JIT_ISEQ_FUNC) {
-        struct rb_mjit_unit_node *node = create_list_node(unit);
-        if (node == NULL) {
-            mjit_warning("failed to allocate a node to be added to active_units");
-            return (mjit_func_t)NOT_COMPILED_JIT_ISEQ_FUNC;
-        }
-
         CRITICAL_SECTION_START(3, "end of jit");
-        add_to_list(node, &active_units);
+        add_to_list(unit, &active_units);
         if (unit->iseq)
             print_jit_result("success", unit, end_time - start_time, c_file);
         CRITICAL_SECTION_FINISH(3, "end of jit");
     }
     return (mjit_func_t)func;
+}
+
+struct mjit_copy_job {
+    const struct rb_iseq_constant_body *body;
+    struct rb_call_cache *cc_entries;
+    union iseq_inline_storage_entry *is_entries;
+    int finish_p;
+};
+
+static void mjit_copy_job_handler(void *data);
+
+/* We're lazily copying cache values from main thread because these cache values
+   could be different between ones on enqueue timing and ones on dequeue timing.
+   Return TRUE if copy succeeds. */
+static int
+copy_cache_from_main_thread(struct mjit_copy_job *job)
+{
+    CRITICAL_SECTION_START(3, "in copy_cache_from_main_thread");
+    job->finish_p = FALSE; /* allow dispatching this job in mjit_copy_job_handler */
+    CRITICAL_SECTION_FINISH(3, "in copy_cache_from_main_thread");
+
+    if (UNLIKELY(mjit_opts.wait)) {
+        mjit_copy_job_handler((void *)job);
+        return job->finish_p;
+    }
+
+    if (!rb_postponed_job_register(0, mjit_copy_job_handler, (void *)job))
+        return FALSE;
+    CRITICAL_SECTION_START(3, "in MJIT copy job wait");
+    /* checking `stop_worker_p` too because `RUBY_VM_CHECK_INTS(ec)` may not
+       lush mjit_copy_job_handler when EC_EXEC_TAG() is not TAG_NONE, and then
+       `stop_worker()` could dead lock with this function. */
+    while (!job->finish_p && !stop_worker_p) {
+        rb_native_cond_wait(&mjit_worker_wakeup, &mjit_engine_mutex);
+        verbose(3, "Getting wakeup from client");
+    }
+    CRITICAL_SECTION_FINISH(3, "in MJIT copy job wait");
+    return job->finish_p;
 }
 
 /* The function implementing a worker. It is executed in a separate
@@ -1168,6 +1158,8 @@ convert_unit_to_func(struct rb_mjit_unit *unit)
 void
 mjit_worker(void)
 {
+    struct mjit_copy_job job;
+
 #ifndef _MSC_VER
     if (pch_status == PCH_NOT_READY) {
         make_pch();
@@ -1185,26 +1177,44 @@ mjit_worker(void)
 
     /* main worker loop */
     while (!stop_worker_p) {
-        struct rb_mjit_unit_node *node;
+        struct rb_mjit_unit *unit;
 
         /* wait until unit is available */
         CRITICAL_SECTION_START(3, "in worker dequeue");
-        while ((unit_queue.head == NULL || active_units.length > mjit_opts.max_cache_size) && !stop_worker_p) {
+        while ((list_empty(&unit_queue.head) || active_units.length >= mjit_opts.max_cache_size) && !stop_worker_p) {
             rb_native_cond_wait(&mjit_worker_wakeup, &mjit_engine_mutex);
             verbose(3, "Getting wakeup from client");
         }
-        node = get_from_list(&unit_queue);
+        unit = get_from_list(&unit_queue);
+        job.finish_p = TRUE; /* disable dispatching this job in mjit_copy_job_handler while it's being modified */
         CRITICAL_SECTION_FINISH(3, "in worker dequeue");
 
-        if (node) {
-            mjit_func_t func = convert_unit_to_func(node->unit);
+        if (unit) {
+            mjit_func_t func;
+
+            job.body = unit->iseq->body;
+            job.cc_entries = NULL;
+            if (job.body->ci_size > 0 || job.body->ci_kw_size > 0)
+                job.cc_entries = alloca(sizeof(struct rb_call_cache) * (job.body->ci_size + job.body->ci_kw_size));
+            job.is_entries = NULL;
+            if (job.body->is_size > 0)
+                job.is_entries = alloca(sizeof(union iseq_inline_storage_entry) * job.body->is_size);
+
+            /* Copy ISeq's inline caches values to avoid race condition. */
+            if (job.cc_entries != NULL || job.is_entries != NULL) {
+                if (copy_cache_from_main_thread(&job) == FALSE) {
+                    continue; /* retry postponed_job failure, or stop worker */
+                }
+            }
+
+            /* JIT compile */
+            func = convert_unit_to_func(unit, job.cc_entries, job.is_entries);
 
             CRITICAL_SECTION_START(3, "in jit func replace");
-            if (node->unit->iseq) { /* Check whether GCed or not */
+            if (unit->iseq) { /* Check whether GCed or not */
                 /* Usage of jit_code might be not in a critical section.  */
-                MJIT_ATOMIC_SET(node->unit->iseq->body->jit_func, func);
+                MJIT_ATOMIC_SET(unit->iseq->body->jit_func, func);
             }
-            remove_from_list(node, &unit_queue);
             CRITICAL_SECTION_FINISH(3, "in jit func replace");
 
 #ifndef _MSC_VER

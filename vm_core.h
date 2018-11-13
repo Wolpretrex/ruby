@@ -86,8 +86,18 @@
 #include <setjmp.h>
 #include <signal.h>
 
-#ifndef NSIG
-# define NSIG (_SIGMAX + 1)      /* For QNX */
+#if defined(NSIG_MAX)           /* POSIX issue 8 */
+# undef NSIG
+# define NSIG NSIG_MAX
+#elif defined(_SIG_MAXSIG)      /* FreeBSD */
+# undef NSIG
+# define NSIG _SIG_MAXSIG
+#elif defined(_SIGMAX)          /* QNX */
+# define NSIG (_SIGMAX + 1)
+#elif defined(NSIG)             /* 99% of everything else */
+# /* take it */
+#else                           /* Last resort */
+# define NSIG (sizeof(sigset_t) * CHAR_BIT + 1)
 #endif
 
 #define RUBY_NSIG NSIG
@@ -194,7 +204,6 @@ enum ruby_tag_type {
 
 enum ruby_vm_throw_flags {
     VM_THROW_NO_ESCAPE_FLAG = 0x8000,
-    VM_THROW_LEVEL_SHIFT = 16,
     VM_THROW_STATE_MASK = 0xff
 };
 
@@ -289,6 +298,7 @@ typedef struct rb_iseq_location_struct {
     VALUE base_label;   /* String */
     VALUE label;        /* String */
     VALUE first_lineno; /* TODO: may be unsigned short */
+    int node_id;
     rb_code_location_t code_location;
 } rb_iseq_location_t;
 
@@ -435,11 +445,12 @@ struct rb_iseq_constant_body {
 				      * So that:
 				      * struct rb_call_info_with_kwarg *cikw_entries = &body->ci_entries[ci_size];
 				      */
-    struct rb_call_cache *cc_entries; /* size is ci_size = ci_kw_size */
+    struct rb_call_cache *cc_entries; /* size is ci_size + ci_kw_size */
 
     struct {
 	rb_snum_t flip_count;
 	VALUE coverage;
+        VALUE pc2branchindex;
 	VALUE *original_iseq;
     } variable;
 
@@ -449,11 +460,13 @@ struct rb_iseq_constant_body {
     unsigned int ci_kw_size;
     unsigned int stack_max; /* for stack overflow check */
 
+#if USE_MJIT
     /* The following fields are MJIT related info.  */
     VALUE (*jit_func)(struct rb_execution_context_struct *,
                       struct rb_control_frame_struct *); /* function pointer for loaded native code */
     long unsigned total_calls; /* number of total calls with `mjit_exec()` */
     struct rb_mjit_unit *jit_unit;
+#endif
     char catch_except_p; /* If a frame of this ISeq may catch exception, set TRUE */
 };
 
@@ -493,6 +506,15 @@ rb_iseq_check(const rb_iseq_t *iseq)
     }
 #endif
     return iseq;
+}
+
+static inline const rb_iseq_t *
+def_iseq_ptr(rb_method_definition_t *def)
+{
+#if VM_CHECK_MODE > 0
+    if (def->type != VM_METHOD_TYPE_ISEQ) rb_bug("def_iseq_ptr: not iseq (%d)", def->type);
+#endif
+    return rb_iseq_check(def->body.iseq.iseqptr);
 }
 
 enum ruby_special_exceptions {
@@ -618,7 +640,8 @@ typedef struct rb_vm_struct {
     struct st_table *ensure_rollback_table;
 
     /* postponed_job */
-    struct st_table *postponed_jobs;
+    struct rb_postponed_job_struct *postponed_job_buffer;
+    int postponed_job_index;
 
     int src_encoding_index;
 
@@ -835,9 +858,12 @@ typedef struct rb_execution_context_struct {
     /* temporary places */
     VALUE errinfo;
     VALUE passed_block_handler; /* for rb_iterate */
-    const rb_callable_method_entry_t *passed_bmethod_me; /* for bmethod */
-    int raised_flag;
-    enum method_missing_reason method_missing_reason;
+
+    uint8_t raised_flag; /* only 3 bits needed */
+
+    /* n.b. only 7 bits needed, really: */
+    BITFIELD(enum method_missing_reason, method_missing_reason, 8);
+
     VALUE private_const_reference;
 
     /* for GC */
@@ -909,9 +935,22 @@ typedef struct rb_thread_struct {
 
     rb_thread_list_t *join_list;
 
-    VALUE first_proc;
-    VALUE first_args;
-    VALUE (*first_func)(ANYARGS);
+    union {
+        struct {
+            VALUE proc;
+            VALUE args;
+        } proc;
+        struct {
+            VALUE (*func)(ANYARGS);
+            void *arg;
+        } func;
+    } invoke_arg;
+
+    enum {
+        thread_invoke_type_none = 0,
+        thread_invoke_type_proc,
+        thread_invoke_type_func
+    } invoke_type;
 
     /* statistics data for profiler */
     VALUE stat_insn_usage;
@@ -1824,6 +1863,7 @@ int rb_thread_check_trap_pending(void);
 
 extern VALUE rb_get_coverages(void);
 extern void rb_set_coverages(VALUE, int, VALUE);
+extern void rb_clear_coverages(void);
 extern void rb_reset_coverages(void);
 
 void rb_postponed_job_flush(rb_vm_t *vm);

@@ -12,10 +12,9 @@
 #ifndef RUBY_ISEQ_H
 #define RUBY_ISEQ_H 1
 
-#include "ruby/version.h"
-
-#define ISEQ_MAJOR_VERSION RUBY_API_VERSION_MAJOR
-#define ISEQ_MINOR_VERSION RUBY_API_VERSION_MINOR
+RUBY_EXTERN const int ruby_api_version[];
+#define ISEQ_MAJOR_VERSION ((unsigned int)ruby_api_version[0])
+#define ISEQ_MINOR_VERSION ((unsigned int)ruby_api_version[1])
 
 #ifndef rb_iseq_t
 typedef struct rb_iseq_struct rb_iseq_t;
@@ -32,6 +31,9 @@ rb_call_info_kw_arg_bytes(int keyword_len)
 #define ISEQ_COVERAGE_SET(iseq, cov)  RB_OBJ_WRITE(iseq, &iseq->body->variable.coverage, cov)
 #define ISEQ_LINE_COVERAGE(iseq)      RARRAY_AREF(ISEQ_COVERAGE(iseq), COVERAGE_INDEX_LINES)
 #define ISEQ_BRANCH_COVERAGE(iseq)    RARRAY_AREF(ISEQ_COVERAGE(iseq), COVERAGE_INDEX_BRANCHES)
+
+#define ISEQ_PC2BRANCHINDEX(iseq)         iseq->body->variable.pc2branchindex
+#define ISEQ_PC2BRANCHINDEX_SET(iseq, h)  RB_OBJ_WRITE(iseq, &iseq->body->variable.pc2branchindex, h)
 
 #define ISEQ_FLIP_CNT(iseq) (iseq)->body->variable.flip_count
 
@@ -73,7 +75,8 @@ ISEQ_ORIGINAL_ISEQ_ALLOC(const rb_iseq_t *iseq, long size)
 			   RUBY_EVENT_RETURN| \
 			   RUBY_EVENT_B_CALL| \
 			   RUBY_EVENT_B_RETURN| \
-			   RUBY_EVENT_COVERAGE_LINE)
+                           RUBY_EVENT_COVERAGE_LINE| \
+                           RUBY_EVENT_COVERAGE_BRANCH)
 
 #define ISEQ_NOT_LOADED_YET   IMEMO_FL_USER1
 #define ISEQ_USE_COMPILE_DATA IMEMO_FL_USER2

@@ -800,22 +800,22 @@ rb_block_lambda(void)
     return proc_new(rb_cProc, TRUE);
 }
 
-/*  Document-method: ===
+/*  Document-method: Proc#===
  *
  *  call-seq:
  *     proc === obj   -> result_of_proc
  *
- *  Invokes the block with +obj+ as the proc's parameter like Proc#call.  It
- *  is to allow a proc object to be a target of +when+ clause in a case
- *  statement.
+ *  Invokes the block with +obj+ as the proc's parameter like Proc#call.
+ *  This allows a proc object to be the target of a +when+ clause
+ *  in a case statement.
  */
 
 /* CHECKME: are the argument checking semantics correct? */
 
 /*
- *  Document-method: []
- *  Document-method: call
- *  Document-method: yield
+ *  Document-method: Proc#[]
+ *  Document-method: Proc#call
+ *  Document-method: Proc#yield
  *
  *  call-seq:
  *     prc.call(params,...)   -> obj
@@ -1482,6 +1482,11 @@ method_entry_defined_class(const rb_method_entry_t *me)
  *     meth.call(9)                 #=> 81
  *     [ 1, 2, 3 ].collect(&meth)   #=> [1, 4, 9]
  *
+ *     [ 1, 2, 3 ].each(&method(:puts)) #=> prints 1, 2, 3
+ *
+ *     require 'date'
+ *     %w[2017-03-01 2017-03-02].collect(&Date.method(:parse))
+ *     #=> [#<Date: 2017-03-01 ((2457814j,0s,0n),+0s,2299161j)>, #<Date: 2017-03-02 ((2457815j,0s,0n),+0s,2299161j)>]
  */
 
 /*
@@ -1576,6 +1581,8 @@ method_unbind(VALUE obj)
  *     meth.receiver    -> object
  *
  *  Returns the bound receiver of the method object.
+ *
+ *    (1..3).method(:map).receiver # => 1..3
  */
 
 static VALUE
@@ -1630,6 +1637,9 @@ method_original_name(VALUE obj)
  *     meth.owner    -> class_or_module
  *
  *  Returns the class or module that defines the method.
+ *  See also receiver.
+ *
+ *    (1..3).method(:map).owner #=> Enumerable
  */
 
 static VALUE
@@ -1643,7 +1653,7 @@ method_owner(VALUE obj)
 void
 rb_method_name_error(VALUE klass, VALUE str)
 {
-#define MSG(s) rb_fstring_cstr("undefined method `%1$s' for"s" `%2$s'")
+#define MSG(s) rb_fstring_lit("undefined method `%1$s' for"s" `%2$s'")
     VALUE c = klass;
     VALUE s;
 
@@ -1712,6 +1722,18 @@ obj_method(VALUE obj, VALUE vid, int scope)
  *     l = Demo.new('Fred')
  *     m = l.method("hello")
  *     m.call   #=> "Hello, @iv = Fred"
+ *
+ *  Note that <code>Method</code> implements <code>to_proc</code> method,
+ *  which means it can be used with iterators.
+ *
+ *     [ 1, 2, 3 ].each(&method(:puts)) # => prints 3 lines to stdout
+ *
+ *     out = File.open('test.txt', 'w')
+ *     [ 1, 2, 3 ].each(&out.method(:puts)) # => prints 3 lines to file
+ *
+ *     require 'date'
+ *     %w[2017-03-01 2017-03-02].collect(&Date.method(:parse))
+ *     #=> [#<Date: 2017-03-01 ((2457814j,0s,0n),+0s,2299161j)>, #<Date: 2017-03-02 ((2457815j,0s,0n),+0s,2299161j)>]
  */
 
 VALUE
@@ -2059,6 +2081,24 @@ method_clone(VALUE self)
     RB_OBJ_WRITE(clone, &data->me, rb_method_entry_clone(orig->me));
     return clone;
 }
+
+/*  Document-method: Method#===
+ *
+ *  call-seq:
+ *     method === obj   -> result_of_method
+ *
+ *  Invokes the method with +obj+ as the parameter like #call.
+ *  This allows a method object to be the target of a +when+ clause
+ *  in a case statement.
+ *
+ *      require 'prime'
+ *
+ *      case 1373
+ *      when Prime.method(:prime?)
+ *        # ...
+ *      end
+ */
+
 
 /*
  *  call-seq:
@@ -2573,9 +2613,13 @@ rb_method_parameters(VALUE method)
  *   meth.to_s      ->  string
  *   meth.inspect   ->  string
  *
- *  Returns the name of the underlying method.
+ *  Returns a human-readable description of the underlying method.
  *
  *    "cat".method(:count).inspect   #=> "#<Method: String#count>"
+ *    (1..3).method(:map).inspect    #=> "#<Method: Range(Enumerable)#map>"
+ *
+ *  In the latter case, the method description includes the "owner" of the
+ *  original method (+Enumerable+ module, which is included into +Range+).
  */
 
 static VALUE
@@ -2819,7 +2863,7 @@ proc_binding(VALUE self)
 	    const struct vm_ifunc *ifunc = block->as.captured.code.ifunc;
 	    if (IS_METHOD_PROC_IFUNC(ifunc)) {
 		VALUE method = (VALUE)ifunc->data;
-		VALUE name = rb_fstring_cstr("<empty_iseq>");
+		VALUE name = rb_fstring_lit("<empty_iseq>");
 		rb_iseq_t *empty;
 		binding_self = method_receiver(method);
 		iseq = rb_method_iseq(method);
@@ -2852,7 +2896,7 @@ proc_binding(VALUE self)
     }
     else {
 	RB_OBJ_WRITE(bindval, &bind->pathobj,
-		     rb_iseq_pathobj_new(rb_fstring_cstr("(binding)"), Qnil));
+		     rb_iseq_pathobj_new(rb_fstring_lit("(binding)"), Qnil));
 	bind->first_lineno = 1;
     }
 

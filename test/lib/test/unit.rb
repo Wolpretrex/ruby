@@ -404,7 +404,7 @@ module Test
           end
           if @options[:separate] and not bang
             worker.quit
-            worker = add_worker
+            worker = launch_worker
           end
           worker.run(task, type)
           @test_count += 1
@@ -892,10 +892,15 @@ module Test
               next if f.empty?
               path = f
             end
-            if !(match = (Dir["#{path}/**/#{@@testfile_prefix}_*.rb"] + Dir["#{path}/**/*_#{@@testfile_suffix}.rb"]).uniq).empty?
+            if f.end_with?(File::SEPARATOR) or !f.include?(File::SEPARATOR) or File.directory?(path)
+              match = (Dir["#{path}/**/#{@@testfile_prefix}_*.rb"] + Dir["#{path}/**/*_#{@@testfile_suffix}.rb"]).uniq
+            else
+              match = Dir[path]
+            end
+            if !match.empty?
               if reject
                 match.reject! {|n|
-                  n[(prefix.length+1)..-1] if prefix
+                  n = n[(prefix.length+1)..-1] if prefix
                   reject_pat =~ n
                 }
               end

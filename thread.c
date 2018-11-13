@@ -74,6 +74,7 @@
 #include "internal.h"
 #include "iseq.h"
 #include "vm_core.h"
+#include "mjit.h"
 #include "hrtime.h"
 
 #ifndef USE_NATIVE_THREAD_PRIORITY
@@ -320,9 +321,9 @@ rb_thread_s_debug_set(VALUE self, VALUE val)
 #endif
 
 #ifndef fill_thread_id_str
-# define fill_thread_id_string(thid, buf) (void *)(thid)
+# define fill_thread_id_string(thid, buf) ((void *)(uintptr_t)(thid))
 # define fill_thread_id_str(th) (void)0
-# define thread_id_str(th) ((void *)(th)->thread_id)
+# define thread_id_str(th) ((void *)(uintptr_t)(th)->thread_id)
 # define PRI_THREAD_ID "p"
 #endif
 
@@ -653,23 +654,42 @@ rb_vm_proc_local_ep(VALUE proc)
 }
 
 static void
-thread_do_start(rb_thread_t *th, VALUE args)
+thread_do_start(rb_thread_t *th)
 {
     native_set_thread_name(th);
-    if (!th->first_func) {
+
+    if (th->invoke_type == thread_invoke_type_proc) {
+        VALUE args = th->invoke_arg.proc.args;
+        long args_len = RARRAY_LEN(args);
+        const VALUE *args_ptr;
+        VALUE procval = th->invoke_arg.proc.proc;
 	rb_proc_t *proc;
-	GetProcPtr(th->first_proc, proc);
-	th->ec->errinfo = Qnil;
-	th->ec->root_lep = rb_vm_proc_local_ep(th->first_proc);
+        GetProcPtr(procval, proc);
+
+        th->ec->errinfo = Qnil;
+        th->ec->root_lep = rb_vm_proc_local_ep(procval);
 	th->ec->root_svar = Qfalse;
-	EXEC_EVENT_HOOK(th->ec, RUBY_EVENT_THREAD_BEGIN, th->self, 0, 0, 0, Qundef);
-	th->value = rb_vm_invoke_proc(th->ec, proc,
-				      (int)RARRAY_LEN(args), RARRAY_CONST_PTR(args),
-				      VM_BLOCK_HANDLER_NONE);
-	EXEC_EVENT_HOOK(th->ec, RUBY_EVENT_THREAD_END, th->self, 0, 0, 0, Qundef);
+
+        EXEC_EVENT_HOOK(th->ec, RUBY_EVENT_THREAD_BEGIN, th->self, 0, 0, 0, Qundef);
+
+        if (args_len < 8) {
+            /* free proc.args if the length is enough small */
+            args_ptr = ALLOCA_N(VALUE, args_len);
+            MEMCPY((VALUE *)args_ptr, RARRAY_CONST_PTR_TRANSIENT(args), VALUE, args_len);
+            th->invoke_arg.proc.args = Qnil;
+        }
+        else {
+            args_ptr = RARRAY_CONST_PTR(args);
+        }
+
+        th->value = rb_vm_invoke_proc(th->ec, proc,
+                                      (int)args_len, args_ptr,
+                                      VM_BLOCK_HANDLER_NONE);
+
+        EXEC_EVENT_HOOK(th->ec, RUBY_EVENT_THREAD_END, th->self, 0, 0, 0, Qundef);
     }
     else {
-	th->value = (*th->first_func)((void *)args);
+        th->value = (*th->invoke_arg.func.func)(th->invoke_arg.func.arg);
     }
 }
 
@@ -679,7 +699,6 @@ static int
 thread_start_func_2(rb_thread_t *th, VALUE *stack_start, VALUE *register_stack_start)
 {
     enum ruby_tag_type state;
-    VALUE args = th->first_args;
     rb_thread_list_t *join_list;
     rb_thread_t *main_th;
     VALUE errinfo = Qnil;
@@ -702,7 +721,7 @@ thread_start_func_2(rb_thread_t *th, VALUE *stack_start, VALUE *register_stack_s
 
 	EC_PUSH_TAG(th->ec);
 	if ((state = EC_EXEC_TAG()) == TAG_NONE) {
-	    SAVE_ROOT_JMPBUF(th, thread_do_start(th, args));
+            SAVE_ROOT_JMPBUF(th, thread_do_start(th));
 	}
 	else {
 	    errinfo = th->ec->errinfo;
@@ -792,10 +811,16 @@ thread_create_core(VALUE thval, VALUE args, VALUE (*fn)(ANYARGS))
 		 "can't start a new thread (frozen ThreadGroup)");
     }
 
-    /* setup thread environment */
-    th->first_func = fn;
-    th->first_proc = fn ? Qfalse : rb_block_proc();
-    th->first_args = args; /* GC: shouldn't put before above line */
+    if (fn) {
+        th->invoke_type = thread_invoke_type_func;
+        th->invoke_arg.func.func = fn;
+        th->invoke_arg.func.arg = (void *)args;
+    }
+    else {
+        th->invoke_type = thread_invoke_type_proc;
+        th->invoke_arg.proc.proc = rb_block_proc();
+        th->invoke_arg.proc.args = args;
+    }
 
     th->priority = current_th->priority;
     th->thgroup = current_th->thgroup;
@@ -817,7 +842,7 @@ thread_create_core(VALUE thval, VALUE args, VALUE (*fn)(ANYARGS))
     return thval;
 }
 
-#define threadptr_initialized(th) ((th)->first_args != 0)
+#define threadptr_initialized(th) ((th)->invoke_type != thread_invoke_type_none)
 
 /*
  * call-seq:
@@ -873,6 +898,17 @@ thread_start(VALUE klass, VALUE args)
     return thread_create_core(rb_thread_alloc(klass), args, 0);
 }
 
+static VALUE
+threadptr_invoke_proc_location(rb_thread_t *th)
+{
+    if (th->invoke_type == thread_invoke_type_proc) {
+        return rb_proc_location(th->invoke_arg.proc.proc);
+    }
+    else {
+        return Qnil;
+    }
+}
+
 /* :nodoc: */
 static VALUE
 thread_initialize(VALUE thread, VALUE args)
@@ -880,19 +916,21 @@ thread_initialize(VALUE thread, VALUE args)
     rb_thread_t *th = rb_thread_ptr(thread);
 
     if (!rb_block_given_p()) {
-	rb_raise(rb_eThreadError, "must be called with a block");
+        rb_raise(rb_eThreadError, "must be called with a block");
     }
-    else if (th->first_args) {
-	VALUE proc = th->first_proc, loc;
-	if (!proc || !RTEST(loc = rb_proc_location(proc))) {
-	    rb_raise(rb_eThreadError, "already initialized thread");
-	}
-	rb_raise(rb_eThreadError,
-		 "already initialized thread - %"PRIsVALUE":%"PRIsVALUE,
-		 RARRAY_AREF(loc, 0), RARRAY_AREF(loc, 1));
+    else if (th->invoke_type != thread_invoke_type_none) {
+        VALUE loc = threadptr_invoke_proc_location(th);
+        if (!NIL_P(loc)) {
+            rb_raise(rb_eThreadError,
+                     "already initialized thread - %"PRIsVALUE":%"PRIsVALUE,
+                     RARRAY_AREF(loc, 0), RARRAY_AREF(loc, 1));
+        }
+        else {
+            rb_raise(rb_eThreadError, "already initialized thread");
+        }
     }
     else {
-	return thread_create_core(thread, args, 0);
+        return thread_create_core(thread, args, NULL);
     }
 }
 
@@ -3080,20 +3118,17 @@ rb_thread_to_s(VALUE thread)
     VALUE cname = rb_class_path(rb_obj_class(thread));
     rb_thread_t *target_th = rb_thread_ptr(thread);
     const char *status;
-    VALUE str;
+    VALUE str, loc;
 
     status = thread_status_name(target_th, TRUE);
     str = rb_sprintf("#<%"PRIsVALUE":%p", cname, (void *)thread);
     if (!NIL_P(target_th->name)) {
-	rb_str_catf(str, "@%"PRIsVALUE, target_th->name);
+        rb_str_catf(str, "@%"PRIsVALUE, target_th->name);
     }
-    if (!target_th->first_func && target_th->first_proc) {
-	VALUE loc = rb_proc_location(target_th->first_proc);
-	if (!NIL_P(loc)) {
-	    const VALUE *ptr = RARRAY_CONST_PTR(loc);
-	    rb_str_catf(str, "@%"PRIsVALUE":%"PRIsVALUE, ptr[0], ptr[1]);
-	    rb_gc_force_recycle(loc);
-	}
+    if ((loc = threadptr_invoke_proc_location(target_th)) != Qnil) {
+        rb_str_catf(str, "@%"PRIsVALUE":%"PRIsVALUE,
+                    RARRAY_AREF(loc, 0), RARRAY_AREF(loc, 1));
+        rb_gc_force_recycle(loc);
     }
     rb_str_catf(str, " %s>", status);
     OBJ_INFECT(str, thread);
@@ -3491,11 +3526,11 @@ rb_thread_variable_p(VALUE thread, VALUE key)
 
     locals = rb_ivar_get(thread, id_locals);
 
-    if (!RHASH(locals)->ntbl)
+    if (rb_hash_lookup(locals, ID2SYM(id)) != Qnil) {
+        return Qtrue;
+    }
+    else {
         return Qfalse;
-
-    if (st_lookup(RHASH(locals)->ntbl, ID2SYM(id), 0)) {
-	return Qtrue;
     }
 
     return Qfalse;
@@ -4313,7 +4348,6 @@ rb_thread_start_timer_thread(void)
     rb_thread_create_timer_thread();
 }
 
-#if defined(HAVE_WORKING_FORK)
 static int
 clear_coverage_i(st_data_t key, st_data_t val, st_data_t dummy)
 {
@@ -4323,11 +4357,16 @@ clear_coverage_i(st_data_t key, st_data_t val, st_data_t dummy)
     VALUE branches = RARRAY_AREF(coverage, COVERAGE_INDEX_BRANCHES);
 
     if (lines) {
-	for (i = 0; i < RARRAY_LEN(lines); i++) {
-	    if (RARRAY_AREF(lines, i) != Qnil) {
-		RARRAY_ASET(lines, i, INT2FIX(0));
-	    }
-	}
+        if (GET_VM()->coverage_mode & COVERAGE_TARGET_ONESHOT_LINES) {
+            rb_ary_clear(lines);
+        }
+        else {
+            int i;
+            for (i = 0; i < RARRAY_LEN(lines); i++) {
+                if (RARRAY_AREF(lines, i) != Qnil)
+                    RARRAY_ASET(lines, i, INT2FIX(0));
+            }
+        }
     }
     if (branches) {
 	VALUE counters = RARRAY_AREF(branches, 1);
@@ -4339,15 +4378,16 @@ clear_coverage_i(st_data_t key, st_data_t val, st_data_t dummy)
     return ST_CONTINUE;
 }
 
-static void
-clear_coverage(void)
+void
+rb_clear_coverages(void)
 {
     VALUE coverages = rb_get_coverages();
     if (RTEST(coverages)) {
-	st_foreach(rb_hash_tbl_raw(coverages), clear_coverage_i, 0);
+        rb_hash_foreach(coverages, clear_coverage_i, 0);
     }
 }
 
+#if defined(HAVE_WORKING_FORK)
 static void
 rb_thread_atfork_internal(rb_thread_t *th, void (*atfork)(rb_thread_t *, const rb_thread_t *))
 {
@@ -4373,7 +4413,7 @@ rb_thread_atfork_internal(rb_thread_t *th, void (*atfork)(rb_thread_t *, const r
     vm->fork_gen++;
 
     vm->sleeper = 0;
-    clear_coverage();
+    rb_clear_coverages();
 }
 
 static void
@@ -4387,7 +4427,6 @@ terminate_atfork_i(rb_thread_t *th, const rb_thread_t *current_th)
 }
 
 /* mjit.c */
-void mjit_child_after_fork(void);
 void rb_fiber_atfork(rb_thread_t *);
 void
 rb_thread_atfork(void)
@@ -5219,13 +5258,20 @@ rb_check_deadlock(rb_vm_t *vm)
 static void
 update_line_coverage(VALUE data, const rb_trace_arg_t *trace_arg)
 {
-    VALUE coverage = rb_iseq_coverage(GET_EC()->cfp->iseq);
+    const rb_control_frame_t *cfp = GET_EC()->cfp;
+    VALUE coverage = rb_iseq_coverage(cfp->iseq);
     if (RB_TYPE_P(coverage, T_ARRAY) && !RBASIC_CLASS(coverage)) {
 	VALUE lines = RARRAY_AREF(coverage, COVERAGE_INDEX_LINES);
 	if (lines) {
 	    long line = rb_sourceline() - 1;
 	    long count;
 	    VALUE num;
+            void rb_iseq_clear_event_flags(const rb_iseq_t *iseq, size_t pos, rb_event_flag_t reset);
+            if (GET_VM()->coverage_mode & COVERAGE_TARGET_ONESHOT_LINES) {
+                rb_iseq_clear_event_flags(cfp->iseq, cfp->pc - cfp->iseq->body->iseq_encoded - 1, RUBY_EVENT_COVERAGE_LINE);
+                rb_ary_push(lines, LONG2FIX(line + 1));
+                return;
+            }
 	    if (line >= RARRAY_LEN(lines)) { /* no longer tracked */
 		return;
 	    }
@@ -5242,11 +5288,13 @@ update_line_coverage(VALUE data, const rb_trace_arg_t *trace_arg)
 static void
 update_branch_coverage(VALUE data, const rb_trace_arg_t *trace_arg)
 {
-    VALUE coverage = rb_iseq_coverage(GET_EC()->cfp->iseq);
+    const rb_control_frame_t *cfp = GET_EC()->cfp;
+    VALUE coverage = rb_iseq_coverage(cfp->iseq);
     if (RB_TYPE_P(coverage, T_ARRAY) && !RBASIC_CLASS(coverage)) {
 	VALUE branches = RARRAY_AREF(coverage, COVERAGE_INDEX_BRANCHES);
 	if (branches) {
-	    long idx = FIX2INT(trace_arg->data), count;
+            long pc = cfp->pc - cfp->iseq->body->iseq_encoded - 1;
+            long idx = FIX2INT(RARRAY_AREF(ISEQ_PC2BRANCHINDEX(cfp->iseq), pc)), count;
 	    VALUE counters = RARRAY_AREF(branches, 1);
 	    VALUE num = RARRAY_AREF(counters, idx);
 	    count = FIX2LONG(num) + 1;
@@ -5340,6 +5388,12 @@ rb_get_coverages(void)
     return GET_VM()->coverages;
 }
 
+int
+rb_get_coverage_mode(void)
+{
+    return GET_VM()->coverage_mode;
+}
+
 void
 rb_set_coverages(VALUE coverages, int mode, VALUE me2counter)
 {
@@ -5355,22 +5409,10 @@ rb_set_coverages(VALUE coverages, int mode, VALUE me2counter)
 }
 
 /* Make coverage arrays empty so old covered files are no longer tracked. */
-static int
-reset_coverage_i(st_data_t key, st_data_t val, st_data_t dummy)
-{
-    VALUE coverage = (VALUE)val;
-    VALUE lines = RARRAY_AREF(coverage, COVERAGE_INDEX_LINES);
-    VALUE branches = RARRAY_AREF(coverage, COVERAGE_INDEX_BRANCHES);
-    if (lines) rb_ary_clear(lines);
-    if (branches) rb_ary_clear(branches);
-    return ST_CONTINUE;
-}
-
 void
 rb_reset_coverages(void)
 {
-    VALUE coverages = rb_get_coverages();
-    st_foreach(rb_hash_tbl_raw(coverages), reset_coverage_i, 0);
+    rb_clear_coverages();
     rb_iseq_remove_coverage_all();
     GET_VM()->coverages = Qfalse;
     rb_remove_event_hook((rb_event_hook_func_t) update_line_coverage);

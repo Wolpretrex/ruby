@@ -139,6 +139,15 @@ typedef char ruby_check_sizeof_voidp[SIZEOF_VOIDP == sizeof(void*) ? 1 : -1];
 #endif
 #endif
 
+#ifndef PRIdPTR
+#define PRIdPTR PRI_PTR_PREFIX"d"
+#define PRIiPTR PRI_PTR_PREFIX"i"
+#define PRIoPTR PRI_PTR_PREFIX"o"
+#define PRIuPTR PRI_PTR_PREFIX"u"
+#define PRIxPTR PRI_PTR_PREFIX"x"
+#define PRIXPTR PRI_PTR_PREFIX"X"
+#endif
+
 #define RUBY_PRI_VALUE_MARK "\v"
 #if defined PRIdPTR && !defined PRI_VALUE_PREFIX
 #define PRIdVALUE PRIdPTR
@@ -1011,6 +1020,10 @@ struct RString {
      ((ptrvar) = RSTRING(str)->as.ary, (lenvar) = RSTRING_EMBED_LEN(str)) : \
      ((ptrvar) = RSTRING(str)->as.heap.ptr, (lenvar) = RSTRING(str)->as.heap.len))
 
+#ifndef USE_TRANSIENT_HEAP
+#define USE_TRANSIENT_HEAP 1
+#endif
+
 enum ruby_rarray_flags {
     RARRAY_EMBED_LEN_MAX = 3,
     RARRAY_EMBED_FLAG = RUBY_FL_USER1,
@@ -1018,12 +1031,20 @@ enum ruby_rarray_flags {
     RARRAY_EMBED_LEN_MASK = (RUBY_FL_USER4|RUBY_FL_USER3),
     RARRAY_EMBED_LEN_SHIFT = (RUBY_FL_USHIFT+3),
 
+#if USE_TRANSIENT_HEAP
+    RARRAY_TRANSIENT_FLAG = RUBY_FL_USER13,
+#define RARRAY_TRANSIENT_FLAG RARRAY_TRANSIENT_FLAG
+#else
+#define RARRAY_TRANSIENT_FLAG 0
+#endif
+
     RARRAY_ENUM_END
 };
 #define RARRAY_EMBED_FLAG (VALUE)RARRAY_EMBED_FLAG
 #define RARRAY_EMBED_LEN_MASK (VALUE)RARRAY_EMBED_LEN_MASK
 #define RARRAY_EMBED_LEN_MAX RARRAY_EMBED_LEN_MAX
 #define RARRAY_EMBED_LEN_SHIFT RARRAY_EMBED_LEN_SHIFT
+
 struct RArray {
     struct RBasic basic;
     union {
@@ -1044,9 +1065,19 @@ struct RArray {
 #define RARRAY_LEN(a) rb_array_len(a)
 #define RARRAY_LENINT(ary) rb_long2int(RARRAY_LEN(ary))
 #define RARRAY_CONST_PTR(a) rb_array_const_ptr(a)
+#define RARRAY_CONST_PTR_TRANSIENT(a) rb_array_const_ptr_transient(a)
 
-#define RARRAY_PTR_USE_START(a) ((VALUE *)RARRAY_CONST_PTR(a))
-#define RARRAY_PTR_USE_END(a) /* */
+#if USE_TRANSIENT_HEAP
+#define RARRAY_TRANSIENT_P(ary) FL_TEST_RAW((ary), RARRAY_TRANSIENT_FLAG)
+#else
+#define RARRAY_TRANSIENT_P(ary) 0
+#endif
+
+VALUE *rb_ary_ptr_use_start(VALUE ary);
+void rb_ary_ptr_use_end(VALUE ary);
+
+#define RARRAY_PTR_USE_START(a) rb_ary_ptr_use_start(a)
+#define RARRAY_PTR_USE_END(a) rb_ary_ptr_use_end(a)
 
 #define RARRAY_PTR_USE(ary, ptr_name, expr) do { \
     const VALUE _ary = (ary); \
@@ -1055,11 +1086,12 @@ struct RArray {
     RARRAY_PTR_USE_END(_ary); \
 } while (0)
 
-#define RARRAY_AREF(a, i)    (RARRAY_CONST_PTR(a)[i])
+#define RARRAY_AREF(a, i) (RARRAY_CONST_PTR_TRANSIENT(a)[i])
 #define RARRAY_ASET(a, i, v) do { \
     const VALUE _ary = (a); \
+    const VALUE _v = (v); \
     VALUE *ptr = (VALUE *)RARRAY_PTR_USE_START(_ary); \
-    RB_OBJ_WRITE(_ary, &ptr[i], (v)); \
+    RB_OBJ_WRITE(_ary, &ptr[i], _v); \
     RARRAY_PTR_USE_END(_ary); \
 } while (0)
 
@@ -1077,11 +1109,13 @@ struct RRegexp {
 #define RREGEXP_SRC_LEN(r) RSTRING_LEN(RREGEXP(r)->src)
 #define RREGEXP_SRC_END(r) RSTRING_END(RREGEXP(r)->src)
 
-/* RHASH_TBL allocates st_table if not available. */
-#define RHASH_TBL(h) rb_hash_tbl(h)
+/* RHash is defined at internal.h */
+size_t rb_hash_size_num(VALUE hash);
+
+#define RHASH_TBL(h) rb_hash_tbl(h, __FILE__, __LINE__)
 #define RHASH_ITER_LEV(h) rb_hash_iter_lev(h)
 #define RHASH_IFNONE(h) rb_hash_ifnone(h)
-#define RHASH_SIZE(h) NUM2SIZET(rb_hash_size(h))
+#define RHASH_SIZE(h) rb_hash_size_num(h)
 #define RHASH_EMPTY_P(h) (RHASH_SIZE(h) == 0)
 #define RHASH_SET_IFNONE(h, ifnone) rb_hash_set_ifnone((VALUE)h, ifnone)
 
@@ -2110,10 +2144,23 @@ rb_array_len(VALUE a)
 #endif
 
 static inline const VALUE *
-rb_array_const_ptr(VALUE a)
+rb_array_const_ptr_transient(VALUE a)
 {
     return FIX_CONST_VALUE_PTR((RBASIC(a)->flags & RARRAY_EMBED_FLAG) ?
 	RARRAY(a)->as.ary : RARRAY(a)->as.heap.ptr);
+}
+
+static inline const VALUE *
+rb_array_const_ptr(VALUE a)
+{
+#if USE_TRANSIENT_HEAP
+    void rb_ary_detransient(VALUE a);
+
+    if (RARRAY_TRANSIENT_P(a)) {
+        rb_ary_detransient(a);
+    }
+#endif
+    return rb_array_const_ptr_transient(a);
 }
 
 #if defined(EXTLIB) && defined(USE_DLN_A_OUT)

@@ -7,13 +7,15 @@ environment:
   ruby_version: "24-%Platform%"
   zlib_version: "1.2.11"
   matrix:
+    # to reduce time for finishing all jobs, run the slowest msys2 build first.
+    - build: msys2
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
     - build: vs
       vs: 120
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2013
     - build: vs
       vs: 140
-    - build: msys2
-matrix:
-  fast_finish: true
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
 notifications:
   - provider: Webhook
     url:
@@ -62,7 +64,6 @@ for:
     - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\mingw64\bin;C:\msys64\usr\bin
     - ruby --version
     - 'cl'
-    - SET
     - echo> Makefile srcdir=.
     - echo>> Makefile MSC_VER=0
     - echo>> Makefile RT=none
@@ -92,10 +93,10 @@ for:
     - set /a JOBS=%NUMBER_OF_PROCESSORS%
     - nmake -l "TESTOPTS=-v -q" btest
     - nmake -l "TESTOPTS=-v -q" test-basic
-    - nmake -l "TESTOPTS=-q -j%JOBS% --subprocess-timeout-scale=1.5 --exclude win32ole --exclude test_syntax" test-all RUBY_FORCE_TEST_JIT=1
+    - nmake -l "TESTOPTS=-q -j%JOBS% --subprocess-timeout-scale=3.0 --exclude win32ole --exclude test_syntax --exclude test_open-uri --exclude test_bundled_ca" test-all
     # separately execute tests that may crash worker without -j.
-    - nmake -l "TESTOPTS=-q --subprocess-timeout-scale=1.5" test-all TESTS="../test/win32ole ../test/ruby/test_syntax.rb"
-    - nmake -l test-spec
+    - nmake -l "TESTOPTS=-v --subprocess-timeout-scale=3.0" test-all TESTS="../test/win32ole ../test/ruby/test_syntax.rb ../test/open-uri/test_open-uri.rb ../test/rubygems/test_bundled_ca.rb"
+    - nmake -l test-spec MSPECOPT=-fs # not using `-j` because sometimes `mspec -j` silently dies on Windows
 -
   matrix:
     only:
@@ -135,5 +136,7 @@ for:
     - mingw32-make DESTDIR=../install install-nodoc
   test_script:
     - mingw32-make test
-    - mingw32-make test-all  TESTOPTS="-j %JOBS% --retry --job-status=normal --show-skip --subprocess-timeout-scale=1.5" RUBY_FORCE_TEST_JIT=1 V=1
-    - mingw32-make test-spec MSPECOPT=-j
+    - mingw32-make test-all TESTOPTS="--retry --job-status=normal --show-skip --subprocess-timeout-scale=1.5 -j %JOBS% --exclude win32ole --exclude test_open-uri"
+    # separately execute tests that may crash worker without -j.
+    - mingw32-make test-all TESTOPTS="--retry --job-status=normal --show-skip --subprocess-timeout-scale=1.5" TESTS="../ruby/test/win32ole ../ruby/test/open-uri/test_open-uri.rb"
+    - mingw32-make test-spec MSPECOPT=-fs # not using `-j` because sometimes `mspec -j` silently dies on Windows
