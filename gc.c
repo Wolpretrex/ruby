@@ -7372,7 +7372,7 @@ gc_ref_update_array(rb_objspace_t * objspace, VALUE v)
 
     len = RARRAY_LEN(v);
     if (len > 0) {
-	VALUE *ptr = RARRAY_CONST_PTR(v);
+	VALUE *ptr = RARRAY_CONST_PTR_TRANSIENT(v);
 	for(i = 0; i < len; i++) {
 	    UPDATE_IF_MOVED(objspace, ptr[i]);
 	}
