@@ -3264,13 +3264,13 @@ id2ref(VALUE obj, VALUE objid)
     if (ptr == Qfalse) return Qfalse;
     if (ptr == Qnil) return Qnil;
 
-    if (st_lookup(id_to_obj_tbl, objid, &ptr)) {
-	return ptr;
-    }
-
     if (FIXNUM_P(ptr)) return (VALUE)ptr;
     if (FLONUM_P(ptr)) return (VALUE)ptr;
     ptr = obj_id_to_ref(objid);
+
+    if (st_lookup(id_to_obj_tbl, objid, &ptr)) {
+	return ptr;
+    }
 
     if ((ptr % sizeof(RVALUE)) == (4 << 2)) {
         ID symid = ptr / sizeof(RVALUE);
@@ -3371,14 +3371,14 @@ rb_obj_id(VALUE obj)
 	int tries;
 	id = nonspecial_obj_id(obj);
 
-	for(tries = 0; tries < 5; tries += 1) {
+	for(tries = 0; tries < 50; tries += 1) {
 	    /* id is the object id */
 	    if (st_lookup(id_to_obj_tbl, (st_data_t)id, 0)) {
 #ifdef GC_COMPACT_DEBUG
 		fprintf(stderr, "object_id called on %p, but there was a collision at %d\n", obj, NUM2INT(id));
 #endif
 		/* Fixnum LSB is always 1, so increment by 2 */
-		id += 2;
+		id += 40;
 	    } else {
 #ifdef GC_COMPACT_DEBUG
 		fprintf(stderr, "Initial insert: %p id: %d\n", obj, NUM2INT(id));
@@ -11017,15 +11017,6 @@ rb_gcdebug_remove_stress_to_class(int argc, VALUE *argv, VALUE self)
 }
 #endif
 
-#ifdef GC_COMPACT_DEBUG
-static VALUE
-rb_memory_location(VALUE self)
-{
-    return nonspecial_obj_id(self);
-}
-#endif
-
-
 /*
  * Document-module: ObjectSpace
  *
@@ -11145,9 +11136,6 @@ Init_GC(void)
 
     rb_define_method(rb_cBasicObject, "__id__", rb_obj_id, 0);
     rb_define_method(rb_mKernel, "object_id", rb_obj_id, 0);
-#ifdef GC_COMPACT_DEBUG
-    rb_define_method(rb_mKernel, "memory_location", rb_memory_location, 0);
-#endif
 
     rb_define_module_function(rb_mObjSpace, "count_objects", count_objects, -1);
 
