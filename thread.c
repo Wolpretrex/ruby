@@ -4004,12 +4004,21 @@ rb_thread_fd_select(int max, rb_fdset_t * read, rb_fdset_t * write, rb_fdset_t *
     set.th = GET_THREAD();
     RUBY_VM_CHECK_INTS_BLOCKING(set.th->ec);
     set.max = max;
-    set.sigwait_fd = rb_sigwait_fd_get(set.th);
     set.rset = read;
     set.wset = write;
     set.eset = except;
     set.timeout = timeout;
 
+    if (!set.rset && !set.wset && !set.eset) {
+        if (!timeout) {
+            rb_thread_sleep_forever();
+            return 0;
+        }
+        rb_thread_wait_for(*timeout);
+        return 0;
+    }
+
+    set.sigwait_fd = rb_sigwait_fd_get(set.th);
     if (set.sigwait_fd >= 0) {
         if (set.rset)
             rb_fd_set(set.sigwait_fd, set.rset);
@@ -4019,15 +4028,6 @@ rb_thread_fd_select(int max, rb_fdset_t * read, rb_fdset_t * write, rb_fdset_t *
             set.max = set.sigwait_fd + 1;
         }
     }
-    if (!set.rset && !set.wset && !set.eset) {
-	if (!timeout) {
-	    rb_thread_sleep_forever();
-	    return 0;
-	}
-	rb_thread_wait_for(*timeout);
-	return 0;
-    }
-
 #define fd_init_copy(f) do { \
         if (set.f) { \
             rb_fd_resize(set.max - 1, set.f); \
@@ -4068,52 +4068,63 @@ rb_wait_for_single_fd(int fd, int events, struct timeval *timeout)
     int result = 0, lerrno;
     rb_hrtime_t *to, rel, end = 0;
     int drained;
-    rb_thread_t *th = GET_THREAD();
     nfds_t nfds;
     rb_unblock_function_t *ubf;
+    struct waiting_fd wfd;
+    int state;
 
-    RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
-    timeout_prepare(&to, &rel, &end, timeout);
-    fds[0].fd = fd;
-    fds[0].events = (short)events;
-    do {
+    wfd.th = GET_THREAD();
+    wfd.fd = fd;
+    list_add(&wfd.th->vm->waiting_fds, &wfd.wfd_node);
+    EC_PUSH_TAG(wfd.th->ec);
+    if ((state = EC_EXEC_TAG()) == TAG_NONE) {
+        RUBY_VM_CHECK_INTS_BLOCKING(wfd.th->ec);
+        timeout_prepare(&to, &rel, &end, timeout);
+        fds[0].fd = fd;
+        fds[0].events = (short)events;
         fds[0].revents = 0;
-        fds[1].fd = rb_sigwait_fd_get(th);
+        do {
+            fds[1].fd = rb_sigwait_fd_get(wfd.th);
 
-        if (fds[1].fd >= 0) {
-            fds[1].events = POLLIN;
-            fds[1].revents = 0;
-            nfds = 2;
-            ubf = ubf_sigwait;
-        }
-        else {
-            nfds = 1;
-            ubf = ubf_select;
-        }
-
-        lerrno = 0;
-        BLOCKING_REGION(th, {
-            const rb_hrtime_t *sto;
-            struct timespec ts;
-
-            sto = sigwait_timeout(th, fds[1].fd, to, &drained);
-            if (!RUBY_VM_INTERRUPTED(th->ec)) {
-                result = ppoll(fds, nfds, rb_hrtime2timespec(&ts, sto), NULL);
-                if (result < 0) lerrno = errno;
-            }
-        }, ubf, th, TRUE);
-
-        if (fds[1].fd >= 0) {
-            if (result > 0 && fds[1].revents) {
-                result--;
+            if (fds[1].fd >= 0) {
+                fds[1].events = POLLIN;
                 fds[1].revents = 0;
+                nfds = 2;
+                ubf = ubf_sigwait;
             }
-            (void)check_signals_nogvl(th, fds[1].fd);
-            rb_sigwait_fd_put(th, fds[1].fd);
-            rb_sigwait_fd_migrate(th->vm);
-        }
-        RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
-    } while (wait_retryable(&result, lerrno, to, end));
+            else {
+                nfds = 1;
+                ubf = ubf_select;
+            }
+
+            lerrno = 0;
+            BLOCKING_REGION(wfd.th, {
+                const rb_hrtime_t *sto;
+                struct timespec ts;
+
+                sto = sigwait_timeout(wfd.th, fds[1].fd, to, &drained);
+                if (!RUBY_VM_INTERRUPTED(wfd.th->ec)) {
+                    result = ppoll(fds, nfds, rb_hrtime2timespec(&ts, sto), 0);
+                    if (result < 0) lerrno = errno;
+                }
+            }, ubf, wfd.th, TRUE);
+
+            if (fds[1].fd >= 0) {
+                if (result > 0 && fds[1].revents) {
+                    result--;
+                }
+                (void)check_signals_nogvl(wfd.th, fds[1].fd);
+                rb_sigwait_fd_put(wfd.th, fds[1].fd);
+                rb_sigwait_fd_migrate(wfd.th->vm);
+            }
+            RUBY_VM_CHECK_INTS_BLOCKING(wfd.th->ec);
+        } while (wait_retryable(&result, lerrno, to, end));
+    }
+    EC_POP_TAG();
+    list_del(&wfd.wfd_node);
+    if (state) {
+        EC_JUMP_TAG(wfd.th->ec, state);
+    }
 
     if (result < 0) {
 	errno = lerrno;
@@ -4152,6 +4163,7 @@ struct select_args {
     rb_fdset_t *read;
     rb_fdset_t *write;
     rb_fdset_t *except;
+    struct waiting_fd wfd;
     struct timeval *tv;
 };
 
@@ -4182,6 +4194,7 @@ select_single_cleanup(VALUE ptr)
 {
     struct select_args *args = (struct select_args *)ptr;
 
+    list_del(&args->wfd.wfd_node);
     if (args->read) rb_fd_term(args->read);
     if (args->write) rb_fd_term(args->write);
     if (args->except) rb_fd_term(args->except);
@@ -4202,7 +4215,10 @@ rb_wait_for_single_fd(int fd, int events, struct timeval *tv)
     args.write = (events & RB_WAITFD_OUT) ? init_set_fd(fd, &wfds) : NULL;
     args.except = (events & RB_WAITFD_PRI) ? init_set_fd(fd, &efds) : NULL;
     args.tv = tv;
+    args.wfd.fd = fd;
+    args.wfd.th = GET_THREAD();
 
+    list_add(&args.wfd.th->vm->waiting_fds, &args.wfd.wfd_node);
     r = (int)rb_ensure(select_single, ptr, select_single_cleanup, ptr);
     if (r == -1)
 	errno = args.as.error;
@@ -4426,7 +4442,6 @@ terminate_atfork_i(rb_thread_t *th, const rb_thread_t *current_th)
     }
 }
 
-/* mjit.c */
 void rb_fiber_atfork(rb_thread_t *);
 void
 rb_thread_atfork(void)
@@ -4439,6 +4454,8 @@ rb_thread_atfork(void)
 
     /* We don't want reproduce CVE-2003-0900. */
     rb_reset_random_seed();
+
+    /* For child, starting MJIT worker thread in this place which is safer than immediately after `after_fork_ruby`. */
     mjit_child_after_fork();
 }
 
@@ -5323,7 +5340,7 @@ rb_resolve_me_location(const rb_method_entry_t *me, VALUE resolved_location[5])
 	break;
       }
       case VM_METHOD_TYPE_BMETHOD: {
-	const rb_iseq_t *iseq = rb_proc_get_iseq(me->def->body.proc, 0);
+        const rb_iseq_t *iseq = rb_proc_get_iseq(me->def->body.bmethod.proc, 0);
 	if (iseq) {
 	    rb_iseq_location_t *loc;
 	    rb_iseq_check(iseq);

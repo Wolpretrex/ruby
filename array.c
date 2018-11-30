@@ -2191,7 +2191,7 @@ rb_ary_dup(VALUE ary)
 VALUE
 rb_ary_resurrect(VALUE ary)
 {
-    return rb_ary_new4(RARRAY_LEN(ary), RARRAY_CONST_PTR_TRANSIENT(ary));
+    return ary_make_partial(ary, rb_cArray, 0, RARRAY_LEN(ary));
 }
 
 extern VALUE rb_output_fs;
@@ -3010,7 +3010,7 @@ rb_ary_collect(VALUE ary)
     RETURN_SIZED_ENUMERATOR(ary, 0, 0, ary_enum_length);
     collect = rb_ary_new2(RARRAY_LEN(ary));
     for (i = 0; i < RARRAY_LEN(ary); i++) {
-	rb_ary_push(collect, rb_yield_force_blockarg(RARRAY_AREF(ary, i)));
+        rb_ary_push(collect, rb_yield(RARRAY_AREF(ary, i)));
     }
     return collect;
 }
@@ -3598,7 +3598,8 @@ static VALUE
 take_i(RB_BLOCK_CALL_FUNC_ARGLIST(val, cbarg))
 {
     VALUE *args = (VALUE *)cbarg;
-    if (args[1]-- == 0) rb_iter_break();
+    if (args[1] == 0) rb_iter_break();
+    else args[1]--;
     if (argc > 1) val = rb_ary_new4(argc, argv);
     rb_ary_push(args[0], val);
     return Qnil;

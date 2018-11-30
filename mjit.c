@@ -24,30 +24,30 @@
 static void
 mjit_copy_job_handler(void *data)
 {
-    struct mjit_copy_job *job = data;
-    int finish_p;
-    if (stop_worker_p) {
-        /* `copy_cache_from_main_thread()` stops to wait for this job. Then job data which is
-           allocated by `alloca()` could be expired and we might not be able to access that.
-           Also this should be checked before CRITICAL_SECTION_START to ensure that mutex is alive. */
+    mjit_copy_job_t *job = data;
+    const struct rb_iseq_constant_body *body;
+    if (stop_worker_p) { /* check if mutex is still alive, before calling CRITICAL_SECTION_START. */
         return;
     }
 
     CRITICAL_SECTION_START(3, "in mjit_copy_job_handler");
-    finish_p = job->finish_p;
-    CRITICAL_SECTION_FINISH(3, "in mjit_copy_job_handler");
-    if (finish_p) {
-        return; /* make sure that this job is never executed while job is being modified. */
+    /* Make sure that this job is never executed when:
+       1. job is being modified
+       2. alloca memory inside job is expired
+       3. ISeq is GC-ed */
+    if (job->finish_p || job->unit->iseq == NULL) {
+        CRITICAL_SECTION_FINISH(3, "in mjit_copy_job_handler");
+        return;
     }
 
+    body = job->unit->iseq->body;
     if (job->cc_entries) {
-        memcpy(job->cc_entries, job->body->cc_entries, sizeof(struct rb_call_cache) * (job->body->ci_size + job->body->ci_kw_size));
+        memcpy(job->cc_entries, body->cc_entries, sizeof(struct rb_call_cache) * (body->ci_size + body->ci_kw_size));
     }
     if (job->is_entries) {
-        memcpy(job->is_entries, job->body->is_entries, sizeof(union iseq_inline_storage_entry) * job->body->is_size);
+        memcpy(job->is_entries, body->is_entries, sizeof(union iseq_inline_storage_entry) * body->is_size);
     }
 
-    CRITICAL_SECTION_START(3, "in mjit_copy_job_handler");
     job->finish_p = TRUE;
     rb_native_cond_broadcast(&mjit_worker_wakeup);
     CRITICAL_SECTION_FINISH(3, "in mjit_copy_job_handler");
@@ -106,6 +106,20 @@ mjit_gc_finish_hook(void)
     CRITICAL_SECTION_FINISH(4, "mjit_gc_finish_hook");
 }
 
+/* Wrap critical section to prevent [Bug #15316] */
+void
+mjit_postponed_job_register_start_hook(void)
+{
+    CRITICAL_SECTION_START(4, "mjit_postponed_job_register_start_hook");
+}
+
+/* Unwrap critical section of mjit_postponed_job_register_start_hook() */
+void
+mjit_postponed_job_register_finish_hook(void)
+{
+    CRITICAL_SECTION_FINISH(4, "mjit_postponed_job_register_finish_hook");
+}
+
 /* Iseqs can be garbage collected.  This function should call when it
    happens.  It removes iseq from the unit.  */
 void
@@ -134,12 +148,13 @@ init_list(struct rb_mjit_unit_list *list)
    because node of unit_queue and one of active_units may have the same unit
    during proceeding unit. */
 static void
-free_list(struct rb_mjit_unit_list *list)
+free_list(struct rb_mjit_unit_list *list, int close_handle_p)
 {
     struct rb_mjit_unit *unit = 0, *next;
 
     list_for_each_safe(&list->head, unit, next, unode) {
         list_del(&unit->unode);
+        if (!close_handle_p) unit->handle = NULL; /* Skip dlclose in free_unit() */
         free_unit(unit);
     }
     list->length = 0;
@@ -496,18 +511,6 @@ init_header_filename(void)
     return TRUE;
 }
 
-/* This is called after each fork in the child in to switch off MJIT
-   engine in the child as it does not inherit MJIT threads.  */
-void
-mjit_child_after_fork(void)
-{
-    if (mjit_enabled) {
-        verbose(3, "Switching off MJIT in a forked child");
-        mjit_enabled = FALSE;
-    }
-    /* TODO: Should we initiate MJIT in the forked Ruby.  */
-}
-
 static enum rb_id_table_iterator_result
 valid_class_serials_add_i(ID key, VALUE v, void *unused)
 {
@@ -661,6 +664,7 @@ mjit_init(struct mjit_options *opts)
         verbose(1, "Failure in MJIT header file name initialization\n");
         return;
     }
+    pch_owner_pid = getpid();
 
     init_list(&unit_queue);
     init_list(&active_units);
@@ -692,10 +696,10 @@ stop_worker(void)
 {
     rb_execution_context_t *ec = GET_EC();
 
-    stop_worker_p = TRUE;
     while (!worker_stopped) {
         verbose(3, "Sending cancel signal to worker");
         CRITICAL_SECTION_START(3, "in stop_worker");
+        stop_worker_p = TRUE; /* Setting this inside loop because RUBY_VM_CHECK_INTS may make this FALSE. */
         rb_native_cond_broadcast(&mjit_worker_wakeup);
         CRITICAL_SECTION_FINISH(3, "in stop_worker");
         RUBY_VM_CHECK_INTS(ec);
@@ -748,11 +752,62 @@ mjit_resume(void)
     return Qtrue;
 }
 
+/* Skip calling `clean_object_files` for units which currently exist in the list. */
+static void
+skip_cleaning_object_files(struct rb_mjit_unit_list *list)
+{
+    struct rb_mjit_unit *unit = NULL, *next;
+
+    /* No mutex for list, assuming MJIT worker does not exist yet since it's immediately after fork. */
+    list_for_each_safe(&list->head, unit, next, unode) {
+#ifndef _MSC_VER /* Actually mswin does not reach here since it doesn't have fork */
+        if (unit->o_file) unit->o_file_inherited_p = TRUE;
+#endif
+
+#if defined(_WIN32) /* mswin doesn't reach here either. This is for MinGW. */
+        if (unit->so_file) unit->so_file = NULL;
+#endif
+    }
+}
+
+/* This is called after fork initiated by Ruby's method to launch MJIT worker thread
+   for child Ruby process.
+
+   In multi-process Ruby applications, child Ruby processes do most of the jobs.
+   Thus we want child Ruby processes to enqueue ISeqs to MJIT worker's queue and
+   call the JIT-ed code.
+
+   But unfortunately current MJIT-generated code is process-specific. After the fork,
+   JIT-ed code created by parent Ruby process cannot be used in child Ruby process
+   because the code could rely on inline cache values (ivar's IC, send's CC) which
+   may vary between processes after fork or embed some process-specific addresses.
+
+   So child Ruby process can't request parent process to JIT an ISeq and use the code.
+   Instead of that, MJIT worker thread is created for all child Ruby processes, even
+   while child processes would end up with compiling the same ISeqs.
+ */
+void
+mjit_child_after_fork(void)
+{
+    if (!mjit_enabled)
+        return;
+
+    /* Let parent process delete the already-compiled object files.
+       This must be done before starting MJIT worker on child process. */
+    skip_cleaning_object_files(&active_units);
+
+    /* MJIT worker thread is not inherited on fork. Start it for this child process. */
+    start_worker();
+}
+
 /* Finish the threads processing units and creating PCH, finalize
    and free MJIT data.  It should be called last during MJIT
-   life.  */
+   life.
+
+   If close_handle_p is TRUE, it calls dlclose() for JIT-ed code. So it should be FALSE
+   if the code can still be on stack. ...But it means to leak JIT-ed handle forever (FIXME). */
 void
-mjit_finish(void)
+mjit_finish(int close_handle_p)
 {
     if (!mjit_enabled)
         return;
@@ -781,7 +836,7 @@ mjit_finish(void)
     rb_native_cond_destroy(&mjit_gc_wakeup);
 
 #ifndef _MSC_VER /* mswin has prebuilt precompiled header */
-    if (!mjit_opts.save_temps)
+    if (!mjit_opts.save_temps && getpid() == pch_owner_pid)
         remove_file(pch_file);
 
     xfree(header_file); header_file = NULL;
@@ -790,9 +845,9 @@ mjit_finish(void)
     xfree(pch_file); pch_file = NULL;
 
     mjit_call_p = FALSE;
-    free_list(&unit_queue);
-    free_list(&active_units);
-    free_list(&compact_units);
+    free_list(&unit_queue, close_handle_p);
+    free_list(&active_units, close_handle_p);
+    free_list(&compact_units, close_handle_p);
     finish_conts();
 
     mjit_enabled = FALSE;

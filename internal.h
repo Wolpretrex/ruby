@@ -1634,10 +1634,12 @@ VALUE rb_math_sqrt(VALUE);
 extern int mjit_enabled;
 VALUE mjit_pause(int wait_p);
 VALUE mjit_resume(void);
+void mjit_finish(int close_handle_p);
 #else
 #define mjit_enabled 0
 static inline VALUE mjit_pause(int wait_p){ return Qnil; } /* unreachable */
 static inline VALUE mjit_resume(void){ return Qnil; } /* unreachable */
+static inline void mjit_finish(int close_handle_p){}
 #endif
 
 /* newline.c */
@@ -2263,6 +2265,13 @@ NORETURN(void rb_unexpected_type(VALUE,int));
     (!RB_TYPE_P((VALUE)(v), (t)) || \
      ((t) == RUBY_T_DATA && RTYPEDDATA_P(v)) ? \
      rb_unexpected_type((VALUE)(v), (t)) : (void)0)
+
+static inline int
+rb_typeddata_is_instance_of_inline(VALUE obj, const rb_data_type_t *data_type)
+{
+    return RB_TYPE_P(obj, T_DATA) && RTYPEDDATA_P(obj) && (RTYPEDDATA_TYPE(obj) == data_type);
+}
+#define rb_typeddata_is_instance_of rb_typeddata_is_instance_of_inline
 
 /* file.c (export) */
 #if defined HAVE_READLINK && defined RUBY_ENCODING_H

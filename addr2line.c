@@ -10,6 +10,7 @@
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wpedantic"
+#pragma clang diagnostic ignored "-Wgcc-compat"
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
@@ -65,6 +66,8 @@ void *alloca();
 #endif
 
 #ifdef HAVE_MACH_O_LOADER_H
+# include <mach-o/fat.h>
+# include <mach-o/ldsyms.h>
 # include <mach-o/loader.h>
 # include <mach-o/nlist.h>
 # include <mach-o/stab.h>
@@ -1828,7 +1831,7 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
 # endif
     int fd;
     off_t filesize;
-    char *file, *p;
+    char *file, *p = NULL;
     obj_info_t *obj = *objp;
     struct LP(mach_header) *header;
     uintptr_t dladdr_fbase = 0;
@@ -1889,8 +1892,38 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
     obj->mapped_size = (size_t)filesize;
 
     header = (struct LP(mach_header) *)file;
-    if (header->magic != LP(MH_MAGIC)) {
-        /* TODO: universal binaries */
+    if (header->magic == LP(MH_MAGIC)) {
+        /* non universal binary */
+        p = file;
+    }
+    else if (header->magic == FAT_CIGAM) {
+        struct fat_header *fat = (struct fat_header *)file;
+        char *q = file + sizeof(*fat);
+        uint32_t nfat_arch = __builtin_bswap32(fat->nfat_arch);
+        /* fprintf(stderr,"%d: fat:%s %d\n",__LINE__, binary_filename,nfat_arch); */
+        for (uint32_t i = 0; i < nfat_arch; i++) {
+            struct fat_arch *arch = (struct fat_arch *)q;
+            cpu_type_t cputype = __builtin_bswap32(arch->cputype);
+            cpu_subtype_t cpusubtype = __builtin_bswap32(arch->cpusubtype);
+            uint32_t offset = __builtin_bswap32(arch->offset);
+            /* fprintf(stderr,"%d: fat %d %x/%x %x/%x\n",__LINE__, i, _mh_execute_header.cputype,_mh_execute_header.cpusubtype, cputype,cpusubtype); */
+            if (_mh_execute_header.cputype == cputype &&
+                    (_mh_execute_header.cpusubtype & ~CPU_SUBTYPE_MASK) == cpusubtype) {
+                p = file + offset;
+                file = p;
+                header = (struct LP(mach_header) *)p;
+                if (header->magic == LP(MH_MAGIC)) {
+                    goto found_mach_header;
+                }
+                break;
+            }
+            q += sizeof(*arch);
+        }
+        kprintf("'%s' is not a Mach-O universal binary file!\n",binary_filename);
+        close(fd);
+        goto fail;
+    }
+    else {
         kprintf("'%s' is not a "
 # ifdef __LP64__
                 "64"
@@ -1901,8 +1934,9 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
         close(fd);
         goto fail;
     }
+found_mach_header:
+    p += sizeof(*header);
 
-    p = file + sizeof(*header);
     for (uint32_t i = 0; i < (uint32_t)header->ncmds; i++) {
         struct load_command *lcmd = (struct load_command *)p;
         switch (lcmd->cmd) {
@@ -1954,13 +1988,14 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
                 for (j = 0; j < cmd->nsyms; j++) {
                     uintptr_t symsize, d;
                     struct LP(nlist) *e = &nl[j];
+                        /* kprintf("[%2d][%4d]: %02x/%x/%x: %s %llx\n", i, j, e->n_type,e->n_sect,e->n_desc,strtab+e->n_un.n_strx,e->n_value); */
                     if (e->n_type != N_FUN) continue;
                     if (e->n_sect) {
                         saddr = (uintptr_t)e->n_value + obj->base_addr - obj->vmaddr;
                         sname = strtab + e->n_un.n_strx;
+                        /* kprintf("[%2d][%4d]: %02x/%x/%x: %s %llx\n", i, j, e->n_type,e->n_sect,e->n_desc,strtab+e->n_un.n_strx,e->n_value); */
                         continue;
                     }
-                    /* kprintf("[%2d][%4d]: %02x/%x/%x: %s %llx\n", i, j, e->n_type,e->n_sect,e->n_desc,strtab+e->n_un.n_strx,e->n_value); */
                     for (int k = offset; k < num_traces; k++) {
                         d = (uintptr_t)traces[k] - saddr;
                         symsize = e->n_value;
@@ -2135,6 +2170,8 @@ rb_dump_backtrace_with_lines(int num_traces, void **traces)
 	    path = info.dli_fname;
 	    obj->path = path;
 	    lines[i].path = path;
+            lines[i].sname = info.dli_sname;
+            lines[i].saddr = (uintptr_t)info.dli_saddr;
 	    strlcpy(binary_filename, path, PATH_MAX);
 	    if (fill_lines(num_traces, traces, 1, &obj, lines, i) == (uintptr_t)-1)
 		break;

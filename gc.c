@@ -660,10 +660,8 @@ typedef struct rb_objspace {
 } rb_objspace_t;
 
 
-#ifndef HEAP_PAGE_ALIGN_LOG
 /* default tiny heap size: 16KB */
 #define HEAP_PAGE_ALIGN_LOG 14
-#endif
 #define CEILDIV(i, mod) (((i) + (mod) - 1)/(mod))
 enum {
     HEAP_PAGE_ALIGN = (1UL << HEAP_PAGE_ALIGN_LOG),
@@ -4454,7 +4452,8 @@ mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me)
 	    gc_mark(objspace, def->body.attr.location);
 	    break;
 	  case VM_METHOD_TYPE_BMETHOD:
-	    gc_mark(objspace, def->body.proc);
+            gc_mark(objspace, def->body.bmethod.proc);
+            if (def->body.bmethod.hooks) rb_hook_list_mark(def->body.bmethod.hooks);
 	    break;
 	  case VM_METHOD_TYPE_ALIAS:
 	    gc_mark(objspace, (VALUE)def->body.alias.original_me);

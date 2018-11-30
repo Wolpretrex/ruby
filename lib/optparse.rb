@@ -534,8 +534,9 @@ class OptionParser
 
     def initialize(pattern = nil, conv = nil,
                    short = nil, long = nil, arg = nil,
-                   desc = ([] if short or long), block = Proc.new)
+                   desc = ([] if short or long), block = nil, &_block)
       raise if Array === pattern
+      block ||= _block
       @pattern, @conv, @short, @long, @arg, @desc, @block =
         pattern, conv, short, long, arg, desc, block
     end
@@ -654,7 +655,7 @@ class OptionParser
       return if sopts.empty? and lopts.empty? # completely hidden
 
       (sopts+lopts).each do |opt|
-        # "(-x -c -r)-l[left justify]" \
+        # "(-x -c -r)-l[left justify]"
         if /^--\[no-\](.+)$/ =~ opt
           o = $1
           yield("--#{o}", desc.join(""))

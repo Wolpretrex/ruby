@@ -1474,6 +1474,39 @@ before_exec_non_async_signal_safe(void)
     rb_thread_stop_timer_thread();
 }
 
+#define WRITE_CONST(fd, str) (void)(write((fd),(str),sizeof(str)-1)<0)
+#ifdef _WIN32
+int rb_w32_set_nonblock2(int fd, int nonblock);
+#endif
+
+static int
+set_blocking(int fd)
+{
+#ifdef _WIN32
+    return rb_w32_set_nonblock2(fd, 0);
+#elif defined(F_GETFL) && defined(F_SETFL)
+    int fl = fcntl(fd, F_GETFL); /* async-signal-safe */
+
+    /* EBADF ought to be possible */
+    if (fl == -1) return fl;
+    if (fl & O_NONBLOCK) {
+        fl &= ~O_NONBLOCK;
+        return fcntl(fd, F_SETFL, fl);
+    }
+    return 0;
+#endif
+}
+
+static void
+stdfd_clear_nonblock(void)
+{
+    /* many programs cannot deal with non-blocking stdin/stdout/stderr */
+    int fd;
+    for (fd = 0; fd < 3; fd++) {
+        (void)set_blocking(fd); /* can't do much about errors anyhow */
+    }
+}
+
 static void
 before_exec(void)
 {
@@ -2911,7 +2944,7 @@ rb_f_exec(int argc, const VALUE *argv)
 
     execarg_obj = rb_execarg_new(argc, argv, TRUE, FALSE);
     eargp = rb_execarg_get(execarg_obj);
-    if (mjit_enabled) mjit_pause(FALSE); /* do not leak children */
+    if (mjit_enabled) mjit_finish(FALSE); /* avoid leaking resources, and do not leave files. XXX: JIT-ed handle can leak after exec error is rescued. */
     before_exec(); /* stop timer thread before redirects */
     rb_execarg_parent_start(execarg_obj);
     fail_str = eargp->use_shell ? eargp->invoke.sh.shell_script : eargp->invoke.cmd.command_name;
@@ -3445,6 +3478,11 @@ rb_execarg_run_options(const struct rb_execarg *eargp, struct rb_execarg *sargp,
             rb_execarg_allocate_dup2_tmpbuf(sargp, RARRAY_LEN(ary));
         }
     }
+    {
+        int preserve = errno;
+        stdfd_clear_nonblock();
+        errno = preserve;
+    }
 
     return 0;
 }
@@ -3644,6 +3682,12 @@ static ssize_t
 read_retry(int fd, void *buf, size_t len)
 {
     ssize_t r;
+
+    if (set_blocking(fd) != 0) {
+#ifndef _WIN32
+        rb_async_bug_errno("set_blocking failed reading child error", errno);
+#endif
+    }
 
     do {
 	r = read(fd, buf, len);
@@ -3993,12 +4037,14 @@ rb_fork_ruby(int *status)
 
     while (1) {
 	prefork();
+        if (mjit_enabled) mjit_pause(FALSE); /* Don't leave locked mutex to child. Note: child_handler must be enabled to pause MJIT. */
 	disable_child_handler_before_fork(&old);
 	before_fork_ruby();
 	pid = fork();
 	err = errno;
-	after_fork_ruby();
+        after_fork_ruby();
 	disable_child_handler_fork_parent(&old); /* yes, bad name */
+        if (mjit_enabled && pid > 0) mjit_resume(); /* child (pid == 0) is cared by rb_thread_atfork */
 	if (pid >= 0) /* fork succeed */
 	    return pid;
 	/* fork failed */
@@ -6420,10 +6466,11 @@ rb_daemon(int nochdir, int noclose)
 {
     int err = 0;
 #ifdef HAVE_DAEMON
+    if (mjit_enabled) mjit_pause(FALSE); /* Don't leave locked mutex to child. */
     before_fork_ruby();
     err = daemon(nochdir, noclose);
     after_fork_ruby();
-    rb_thread_atfork();
+    rb_thread_atfork(); /* calls mjit_resume() */
 #else
     int n;
 

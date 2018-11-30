@@ -256,7 +256,7 @@ AC_SUBST(CSRCFLAG)
 AS_IF([test "x$cross_compiling" = xno], [
     AC_PATH_PROG([MJIT_CC], ${MJIT_CC})
     AS_CASE([$target_os],
-	[*mingw*], [command -v cygpath && MJIT_CC=`cygpath -ma $MJIT_CC`])
+	[*mingw*], [command -v cygpath > /dev/null && MJIT_CC=`cygpath -ma $MJIT_CC`])
     shift 2
     MJIT_CC="$MJIT_CC${1+ }$*"
 ])
@@ -473,46 +473,48 @@ AC_ARG_ENABLE(werror,
 	[particular_werror_flags=$enableval])
 
 rb_cv_warnflags="$warnflags"
-AS_IF([test "$GCC:${warnflags+set}:no" = yes::no], [
+AS_CASE(["$GCC:${warnflags+set}:${extra_warnflags:+set}:"],
+[yes::*|yes:*:set:], [# GCC && (!warnflags || extra_warnflags)
     AS_IF([test $gcc_major -ge 4], [
-	extra_warning=-Werror=extra-tokens
-    ], [
-	extra_warning=
+	extra_warnflags="$extra_warnflags -Werror=extra-tokens"
     ])
     AS_IF([test $gcc_major -ge 5 -a $gcc_major -le 6], [
-	extra_warning="$extra_warning -Wno-maybe-uninitialized"
+	extra_warnflags="$extra_warnflags -Wno-maybe-uninitialized"
     ])
     # ICC doesn't support -Werror=
     AS_IF([test $icc_version -gt 0], [
 	particular_werror_flags=no
     ])
-    for wflag in -Wno-unused-parameter -Wno-long-long \
-                 -diag-disable=175,188,2259 \
-		 -Wno-missing-field-initializers \
-		 -Wno-tautological-compare \
-		 -Wno-parentheses-equality \
-		 -Wno-constant-logical-operand \
-		 -Wno-self-assign \
-		 -Wno-cast-function-type \
-		 -Wunused-variable \
-		 -Werror=implicit-int \
-		 -Werror=pointer-arith \
-		 -Werror=write-strings \
+    for wflag in \
 		 -Werror=declaration-after-statement \
-		 -Werror=shorten-64-to-32 \
-		 -Werror=implicit-function-declaration \
-		 -Werror=division-by-zero \
 		 -Werror=deprecated-declarations \
+		 -Werror=division-by-zero \
+		 -Werror=duplicated-cond \
+		 -Werror=implicit-function-declaration \
+		 -Werror=implicit-int \
 		 -Werror=misleading-indentation \
+		 -Werror=pointer-arith \
+		 -Werror=restrict \
+		 -Werror=shorten-64-to-32 \
+		 -Werror=write-strings \
+		 -Wimplicit-fallthrough=0 \
+		 -Wmissing-noreturn \
+		 -Wno-cast-function-type \
+		 -Wno-constant-logical-operand \
+		 -Wno-long-long \
+		 -Wno-missing-field-initializers \
 		 -Wno-overlength-strings \
 		 -Wno-packed-bitfield-compat \
-		 -Wsuggest-attribute=noreturn \
+		 -Wno-parentheses-equality \
+		 -Wno-self-assign \
+		 -Wno-tautological-compare \
+		 -Wno-unused-parameter \
+		 -Wno-unused-value \
 		 -Wsuggest-attribute=format \
-		 -Wmissing-noreturn \
-		 -Wimplicit-fallthrough=0 \
-		 -Werror=duplicated-cond \
-		 -Werror=restrict \
-		 $extra_warning \
+		 -Wsuggest-attribute=noreturn \
+		 -Wunused-variable \
+		 -diag-disable=175,188,2259 \
+		 $extra_warnflags \
 		 ; do
 	AS_IF([test "$particular_werror_flags" != yes], [
 	    wflag=`echo x$wflag | sed 's/^x-Werror=/-W/;s/^x//'`
@@ -956,9 +958,12 @@ main()
                 ac_cv_func_clock_gettime=yes
                 ac_cv_func_clock_getres=yes
 		ac_cv_func_malloc_usable_size=no
+		ac_cv_type_off_t=yes
+		ac_cv_sizeof_off_t=8
 		AS_IF([test "$target_cpu" = x64], [
-		    ac_cv_func___builtin_setjmp=no
+		    ac_cv_func___builtin_setjmp=yes
 		    ac_cv_func_round=no
+		    rb_cv_fiber_coroutine=yes
 		])
 		ac_cv_func_tgamma=no
 		rb_cv_negative_time_t=yes
@@ -997,6 +1002,11 @@ main()
 		# the TOC register (r2), which is problematic
 		# when a global exit happens from JITted .so code.
 		AS_CASE(["$target_cpu"], [powerpc64*], [
+			ac_cv_func___builtin_setjmp=no
+		])
+		# With gcc-8's -fcf-protection, MJIT's __builtin_longjmp fails.
+		AS_CASE(["$CC $CFLAGS "], [*" -fcf-protection "*], [cf_protection=yes], [cf_protection=no])
+		AS_IF([test "$cf_protection" = yes], [
 			ac_cv_func___builtin_setjmp=no
 		])
 		],
@@ -1137,7 +1147,6 @@ mv confdefs1.h confdefs.h
 cat largefile.h >> confdefs.h
 
 AS_CASE(["$target_os"],
-    [mingw*], [ac_cv_type_off_t=yes;ac_cv_sizeof_off_t=8],
     [aix*], [
     AS_CASE(["$target_cpu:$ac_cv_sys_large_files"],
 	[ppc64:*|powerpc64:*], [],
@@ -1630,34 +1639,6 @@ AC_CACHE_CHECK(for stack end address, rb_cv_stack_end_address,
 ])
 AS_IF([test $rb_cv_stack_end_address != no], [
   AC_DEFINE_UNQUOTED(STACK_END_ADDRESS, $rb_cv_stack_end_address)
-])
-
-# posix_memalign(memptr, alignment, size) implemented for OpenBSD 4.8 doesn't work if alignment > MALLOC_PAGESIZE.
-# [ruby-core:42158] https://bugs.ruby-lang.org/issues/5901
-# OpenBSD 5.2 fixed the problem. (src/lib/libc/stdlib/malloc.c:1.142)
-# MirOS #10semel has the problem but fixed in the repository.  (src/lib/libc/stdlib/malloc.c:1.9)
-AS_CASE(["$target_os"],
-[openbsd*|mirbsd*], [
-  AC_CACHE_CHECK(for heap align log on openbsd, rb_cv_page_size_log,
-    [rb_cv_page_size_log=no
-     for page_log in 12 13; do
-       AC_TRY_RUN([
-#include <math.h>
-#include <unistd.h>
-
-int
-main() {
-  if ((int)log2((double)sysconf(_SC_PAGESIZE)) != $page_log) return 1;
-  return 0;
-}
-       ],
-       rb_cv_page_size_log="$page_log"; break)
-     done])
-  AS_IF([test $rb_cv_page_size_log != no], [
-    AC_DEFINE_UNQUOTED(HEAP_ALIGN_LOG, $rb_cv_page_size_log)
-  ], [
-    AC_DEFINE_UNQUOTED(HEAP_ALIGN_LOG, 12)
-  ])
 ])
 
 dnl Checks for library functions.
@@ -2318,6 +2299,40 @@ AS_IF([test "${universal_binary-no}" = yes ], [
     AC_DEFINE_UNQUOTED(STACK_GROW_DIRECTION, $dir)
 ])
 
+AC_ARG_ENABLE(fiber-coroutine,
+    AS_HELP_STRING([--disable-fiber-coroutine], [disable native coroutine implementation for fiber]),
+    [rb_cv_fiber_coroutine=$enableval])
+AS_CASE(["$rb_cv_fiber_coroutine"], [yes|''], [
+    AC_MSG_CHECKING(native coroutine implementation for ${target_cpu}-${target_os})
+    AS_CASE(["$target_cpu-$target_os"],
+	[x*64-darwin*], [
+	    rb_cv_fiber_coroutine=amd64
+	],
+	[x*64-linux], [
+	    AS_CASE(["$ac_cv_sizeof_voidp"],
+	        [8], [ rb_cv_fiber_coroutine=amd64 ],
+	        [4], [ rb_cv_fiber_coroutine=x86 ],
+		[*], [ rb_cv_fiber_coroutine= ]
+	    )
+	],
+	[*86-linux], [
+	    rb_cv_fiber_coroutine=x86
+	],
+	[x64-mingw32], [
+	    rb_cv_fiber_coroutine=win64
+	],
+	[*], [
+	    rb_cv_fiber_coroutine=
+	]
+    )
+    AC_MSG_RESULT(${rb_cv_fiber_coroutine:-no})
+])
+AS_IF([test "${rb_cv_fiber_coroutine:-no}" != no], [
+    COROUTINE_H=coroutine/$rb_cv_fiber_coroutine/Context.h
+    AC_DEFINE_UNQUOTED(FIBER_USE_COROUTINE, ["$COROUTINE_H"])
+    AC_SUBST(X_FIBER_COROUTINE_H, [$COROUTINE_H])
+])
+
 AS_IF([test x"$enable_pthread" = xyes], [
     for pthread_lib in thr pthread pthreads c c_r root; do
 	AC_CHECK_LIB($pthread_lib, pthread_create,
@@ -2669,8 +2684,8 @@ AS_IF([test "$with_dln_a_out" != yes], [
 			XLDFLAGS="${linker_flag}"'-bE:$(ARCHFILE)'" ${linker_flag}-brtl"
 			XLDFLAGS="$XLDFLAGS ${linker_flag}-blibpath:${prefix}/lib:${LIBPATH:-/usr/lib:/lib}"
 			: ${ARCHFILE="ruby.imp"}
-                        TRY_LINK='$(CC) $(LDFLAGS) -oconftest $(INCFLAGS) -I$(hdrdir) $(CPPFLAGS)'
-                        TRY_LINK="$TRY_LINK"' $(CFLAGS) $(src) $(LIBPATH) $(LOCAL_LIBS) $(LIBS)'
+                        TRY_LINK='$(CC) -oconftest $(INCFLAGS) -I$(hdrdir) $(CPPFLAGS)'
+                        TRY_LINK="$TRY_LINK"' $(CFLAGS) $(src) $(LIBPATH) $(LDFLAGS) $(LOCAL_LIBS) $(LIBS)'
 			: ${LIBPATHENV=LIBPATH}
 			rb_cv_dlopen=yes],
 	[nto-qnx*], [	DLDFLAGS="$DLDFLAGS -L/lib -L/usr/lib -L/usr/local/lib"
@@ -3339,10 +3354,10 @@ AC_SUBST(CAPITARGET)
 AS_CASE(["$RDOCTARGET:$CAPITARGET"],[nodoc:nodoc],[INSTALLDOC=nodoc],[INSTALLDOC=all])
 AC_SUBST(INSTALLDOC)
 
-AC_ARG_ENABLE(mjit-support,
-        AS_HELP_STRING([--disable-mjit-support], [disable MJIT features]),
+AC_ARG_ENABLE(jit-support,
+        AS_HELP_STRING([--disable-jit-support], [disable JIT features]),
         [MJIT_SUPPORT=$enableval
-         AS_IF([test x"$enable_mjit_support" = "xyes"],
+         AS_IF([test x"$enable_jit_support" = "xyes"],
                  [AC_DEFINE(USE_MJIT, 1)],
                  [AC_DEFINE(USE_MJIT, 0)])],
         [MJIT_SUPPORT=yes
@@ -4014,7 +4029,7 @@ config_summary "debugflags"          "$debugflags"
 config_summary "warnflags"           "$warnflags"
 config_summary "strip command"       "$STRIP"
 config_summary "install doc"         "$install_doc"
-config_summary "MJIT support"        "$MJIT_SUPPORT"
+config_summary "JIT support"         "$MJIT_SUPPORT"
 config_summary "man page type"       "$MANTYPE"
 config_summary "search path"         "$search_path"
 config_summary "static-linked-ext"   ${EXTSTATIC:+"yes"}

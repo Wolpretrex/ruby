@@ -132,6 +132,10 @@ struct rb_mjit_unit {
 #ifndef _MSC_VER
     /* This value is always set for `compact_all_jit_code`. Also used for lazy deletion. */
     char *o_file;
+    /* TRUE if it's inherited from parent Ruby process and lazy deletion should be skipped.
+       `o_file = NULL` can't be used to skip lazy deletion because `o_file` could be used
+       by child for `compact_all_jit_code`. */
+    int o_file_inherited_p;
 #endif
 #if defined(_WIN32)
     /* DLL cannot be removed while loaded on Windows. If this is set, it'll be lazily deleted. */
@@ -169,7 +173,7 @@ struct mjit_options mjit_opts;
 
 /* TRUE if MJIT is enabled.  */
 int mjit_enabled = FALSE;
-/* TRUE if JIT-ed code should be called. When `ruby_vm_event_enabled_flags & ISEQ_TRACE_EVENTS`
+/* TRUE if JIT-ed code should be called. When `ruby_vm_event_enabled_global_flags & ISEQ_TRACE_EVENTS`
    and `mjit_call_p == FALSE`, any JIT-ed code execution is cancelled as soon as possible. */
 int mjit_call_p = FALSE;
 
@@ -213,6 +217,8 @@ static VALUE valid_class_serials;
 static const char *cc_path;
 /* Name of the precompiled header file.  */
 static char *pch_file;
+/* The process id which should delete the pch_file on mjit_finish. */
+static rb_pid_t pch_owner_pid;
 /* Status of the precompiled header creation.  The status is
    shared by the workers and the pch thread.  */
 static enum {PCH_NOT_READY, PCH_FAILED, PCH_SUCCESS} pch_status;
@@ -347,7 +353,7 @@ clean_object_files(struct rb_mjit_unit *unit)
         unit->o_file = NULL;
         /* For compaction, unit->o_file is always set when compilation succeeds.
            So save_temps needs to be checked here. */
-        if (!mjit_opts.save_temps)
+        if (!mjit_opts.save_temps && !unit->o_file_inherited_p)
             remove_file(o_file);
         free(o_file);
     }
@@ -1083,7 +1089,7 @@ convert_unit_to_func(struct rb_mjit_unit *unit, struct rb_call_cache *cc_entries
         o_files[0] = o_file;
         success = link_o_to_so(o_files, so_file);
 
-        /* Alwasy set o_file for compaction. The value is also used for lazy deletion. */
+        /* Always set o_file for compaction. The value is also used for lazy deletion. */
         unit->o_file = strdup(o_file);
         if (unit->o_file == NULL) {
             mjit_warning("failed to allocate memory to remember '%s' (%s), removing it...", o_file, strerror(errno));
@@ -1114,12 +1120,16 @@ convert_unit_to_func(struct rb_mjit_unit *unit, struct rb_call_cache *cc_entries
     return (mjit_func_t)func;
 }
 
-struct mjit_copy_job {
-    const struct rb_iseq_constant_body *body;
+typedef struct {
+    struct rb_mjit_unit *unit;
     struct rb_call_cache *cc_entries;
     union iseq_inline_storage_entry *is_entries;
     int finish_p;
-};
+} mjit_copy_job_t;
+
+/* Singleton MJIT copy job. This is made global since it needs to be durable even when MJIT worker thread is stopped.
+   (ex: register job -> MJIT pause -> MJIT resume -> dispatch job. Actually this should be just cancelled by finish_p check) */
+static mjit_copy_job_t mjit_copy_job;
 
 static void mjit_copy_job_handler(void *data);
 
@@ -1127,7 +1137,7 @@ static void mjit_copy_job_handler(void *data);
    could be different between ones on enqueue timing and ones on dequeue timing.
    Return TRUE if copy succeeds. */
 static int
-copy_cache_from_main_thread(struct mjit_copy_job *job)
+copy_cache_from_main_thread(mjit_copy_job_t *job)
 {
     CRITICAL_SECTION_START(3, "in copy_cache_from_main_thread");
     job->finish_p = FALSE; /* allow dispatching this job in mjit_copy_job_handler */
@@ -1158,7 +1168,7 @@ copy_cache_from_main_thread(struct mjit_copy_job *job)
 void
 mjit_worker(void)
 {
-    struct mjit_copy_job job;
+    mjit_copy_job_t *job = &mjit_copy_job; /* just a shorthand */
 
 #ifndef _MSC_VER
     if (pch_status == PCH_NOT_READY) {
@@ -1186,31 +1196,36 @@ mjit_worker(void)
             verbose(3, "Getting wakeup from client");
         }
         unit = get_from_list(&unit_queue);
-        job.finish_p = TRUE; /* disable dispatching this job in mjit_copy_job_handler while it's being modified */
+        job->finish_p = TRUE; /* disable dispatching this job in mjit_copy_job_handler while it's being modified */
         CRITICAL_SECTION_FINISH(3, "in worker dequeue");
 
         if (unit) {
             mjit_func_t func;
+            const struct rb_iseq_constant_body *body = unit->iseq->body;
 
-            job.body = unit->iseq->body;
-            job.cc_entries = NULL;
-            if (job.body->ci_size > 0 || job.body->ci_kw_size > 0)
-                job.cc_entries = alloca(sizeof(struct rb_call_cache) * (job.body->ci_size + job.body->ci_kw_size));
-            job.is_entries = NULL;
-            if (job.body->is_size > 0)
-                job.is_entries = alloca(sizeof(union iseq_inline_storage_entry) * job.body->is_size);
+            job->unit = unit;
+            job->cc_entries = NULL;
+            if (body->ci_size > 0 || body->ci_kw_size > 0)
+                job->cc_entries = alloca(sizeof(struct rb_call_cache) * (body->ci_size + body->ci_kw_size));
+            job->is_entries = NULL;
+            if (body->is_size > 0)
+                job->is_entries = alloca(sizeof(union iseq_inline_storage_entry) * body->is_size);
 
             /* Copy ISeq's inline caches values to avoid race condition. */
-            if (job.cc_entries != NULL || job.is_entries != NULL) {
-                if (copy_cache_from_main_thread(&job) == FALSE) {
+            if (job->cc_entries != NULL || job->is_entries != NULL) {
+                if (copy_cache_from_main_thread(job) == FALSE) {
                     continue; /* retry postponed_job failure, or stop worker */
                 }
             }
 
             /* JIT compile */
-            func = convert_unit_to_func(unit, job.cc_entries, job.is_entries);
+            func = convert_unit_to_func(unit, job->cc_entries, job->is_entries);
 
             CRITICAL_SECTION_START(3, "in jit func replace");
+            while (in_gc) { /* Make sure we're not GC-ing when touching ISeq */
+                verbose(3, "Waiting wakeup from GC");
+                rb_native_cond_wait(&mjit_gc_wakeup, &mjit_engine_mutex);
+            }
             if (unit->iseq) { /* Check whether GCed or not */
                 /* Usage of jit_code might be not in a critical section.  */
                 MJIT_ATOMIC_SET(unit->iseq->body->jit_func, func);
@@ -1226,6 +1241,10 @@ mjit_worker(void)
 #endif
         }
     }
+
+    /* Disable dispatching this job in mjit_copy_job_handler while memory allocated by alloca
+       could be expired after finishing this function. */
+    job->finish_p = TRUE;
 
     /* To keep mutex unlocked when it is destroyed by mjit_finish, don't wrap CRITICAL_SECTION here. */
     worker_stopped = TRUE;

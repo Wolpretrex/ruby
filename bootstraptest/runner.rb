@@ -385,7 +385,7 @@ def assert_finish(timeout_seconds, testsrc, message = '')
         if IO.select([io], nil, nil, diff)
           begin
             io.read_nonblock(1024)
-          rescue Errno::EAGAIN, EOFError
+          rescue Errno::EAGAIN, IO::WaitReadable, EOFError
             break
           end while true
         end

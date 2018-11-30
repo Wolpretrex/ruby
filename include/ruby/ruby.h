@@ -1723,11 +1723,11 @@ rb_alloc_tmp_buffer2(volatile VALUE *store, long count, size_t elsize)
 #else
 # define RUBY_ALLOCV_LIMIT 1024
 # define RB_ALLOCV(v, n) ((n) < RUBY_ALLOCV_LIMIT ? \
-		       (RB_GC_GUARD(v) = 0, alloca(n)) : \
+                       ((v) = 0, alloca(n)) : \
 		       rb_alloc_tmp_buffer(&(v), (n)))
 # define RB_ALLOCV_N(type, v, n) \
     ((type*)(((size_t)(n) < RUBY_ALLOCV_LIMIT / sizeof(type)) ? \
-	     (RB_GC_GUARD(v) = 0, alloca((size_t)(n) * sizeof(type))) : \
+             ((v) = 0, alloca((size_t)(n) * sizeof(type))) : \
 	     rb_alloc_tmp_buffer2(&(v), (long)(n), sizeof(type))))
 #endif
 #define RB_ALLOCV_END(v) rb_free_tmp_buffer(&(v))
@@ -2325,10 +2325,10 @@ ERRORFUNC(("variable argument length doesn't match"), int rb_scan_args_length_mi
      rb_scan_args_length_mismatch(fmt, varc)))
 
 # if defined(__has_attribute) && __has_attribute(diagnose_if)
-#  define rb_scan_args_verify(fmt, varc) 0
+#  define rb_scan_args_verify(fmt, varc) (void)0
 # elif defined(__GNUC__)
 # define rb_scan_args_verify(fmt, varc) \
-    __extension__ ({ \
+    (void)__extension__ ({ \
 	int verify; \
 	_Pragma("GCC diagnostic push"); \
 	_Pragma("GCC diagnostic ignored \"-Warray-bounds\""); \
@@ -2338,7 +2338,7 @@ ERRORFUNC(("variable argument length doesn't match"), int rb_scan_args_length_mi
     })
 # else
 # define rb_scan_args_verify(fmt, varc) \
-    rb_scan_args_verify_count(fmt, varc)
+    (void)rb_scan_args_verify_count(fmt, varc)
 # endif
 
 ALWAYS_INLINE(static int rb_scan_args_lead_p(const char *fmt));

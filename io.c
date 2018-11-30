@@ -135,6 +135,15 @@ off_t __syscall(quad_t number, ...);
 #define rename(f, t)	rb_w32_urename((f), (t))
 #endif
 
+#if defined(_WIN32)
+#  define RUBY_PIPE_NONBLOCK_DEFAULT    (0)
+#elif defined(O_NONBLOCK)
+  /* disabled for [Bug #15356] (Rack::Deflater + rails) failure: */
+#  define RUBY_PIPE_NONBLOCK_DEFAULT    (0)
+#else /* any platforms where O_NONBLOCK does not exist? */
+#  define RUBY_PIPE_NONBLOCK_DEFAULT    (0)
+#endif
+
 VALUE rb_cIO;
 VALUE rb_eEOFError;
 VALUE rb_eIOError;
@@ -185,14 +194,22 @@ static rb_atomic_t max_file_descriptor = NOFILE;
 void
 rb_update_max_fd(int fd)
 {
-    struct stat buf;
     rb_atomic_t afd = (rb_atomic_t)fd;
     rb_atomic_t max_fd = max_file_descriptor;
+    int err;
 
     if (afd <= max_fd)
         return;
 
-    if (fstat(fd, &buf) != 0 && errno == EBADF) {
+#if defined(HAVE_FCNTL) && defined(F_GETFL)
+    err = fcntl(fd, F_GETFL) == -1;
+#else
+    {
+        struct stat buf;
+        err = fstat(fd, &buf) != 0;
+    }
+#endif
+    if (err && errno == EBADF) {
         rb_bug("rb_update_max_fd: invalid fd (%d) given.", fd);
     }
 
@@ -316,6 +333,27 @@ rb_cloexec_dup2(int oldfd, int newfd)
     return ret;
 }
 
+static int
+rb_fd_set_nonblock(int fd)
+{
+#ifdef _WIN32
+    return rb_w32_set_nonblock(fd);
+#elif defined(F_GETFL)
+    int err;
+    int oflags = fcntl(fd, F_GETFL);
+
+    if (oflags == -1)
+        return -1;
+    if (oflags & O_NONBLOCK)
+        return 0;
+    oflags |= O_NONBLOCK;
+    err = fcntl(fd, F_SETFL, oflags);
+    if (err == -1)
+        return -1;
+#endif
+    return 0;
+}
+
 int
 rb_cloexec_pipe(int fildes[2])
 {
@@ -324,7 +362,7 @@ rb_cloexec_pipe(int fildes[2])
 #if defined(HAVE_PIPE2)
     static int try_pipe2 = 1;
     if (try_pipe2) {
-        ret = pipe2(fildes, O_CLOEXEC);
+        ret = pipe2(fildes, O_CLOEXEC | RUBY_PIPE_NONBLOCK_DEFAULT);
         if (ret != -1)
             return ret;
         /* pipe2 is available since Linux 2.6.27, glibc 2.9. */
@@ -350,6 +388,10 @@ rb_cloexec_pipe(int fildes[2])
 #endif
     rb_maygvl_fd_fix_cloexec(fildes[0]);
     rb_maygvl_fd_fix_cloexec(fildes[1]);
+    if (RUBY_PIPE_NONBLOCK_DEFAULT) {
+        rb_fd_set_nonblock(fildes[0]);
+        rb_fd_set_nonblock(fildes[1]);
+    }
     return ret;
 }
 
@@ -615,7 +657,8 @@ static void
 io_fd_check_closed(int fd)
 {
     if (fd < 0) {
-	rb_raise(rb_eIOError, closed_stream);
+        rb_thread_check_ints(); /* check for ruby_error_stream_closed */
+        rb_raise(rb_eIOError, closed_stream);
     }
 }
 
@@ -920,6 +963,7 @@ io_alloc(VALUE klass)
 
 struct io_internal_read_struct {
     int fd;
+    int nonblock;
     void *buf;
     size_t capa;
 };
@@ -938,11 +982,24 @@ struct io_internal_writev_struct {
 };
 #endif
 
+static int nogvl_wait_for_single_fd(int fd, short events);
 static VALUE
 internal_read_func(void *ptr)
 {
     struct io_internal_read_struct *iis = ptr;
-    return read(iis->fd, iis->buf, iis->capa);
+    ssize_t r;
+retry:
+    r = read(iis->fd, iis->buf, iis->capa);
+    if (r < 0 && !iis->nonblock) {
+        int e = errno;
+        if (e == EAGAIN || e == EWOULDBLOCK) {
+            if (nogvl_wait_for_single_fd(iis->fd, RB_WAITFD_IN) != -1) {
+                goto retry;
+            }
+            errno = e;
+        }
+    }
+    return r;
 }
 
 #if defined __APPLE__
@@ -980,7 +1037,9 @@ static ssize_t
 rb_read_internal(int fd, void *buf, size_t count)
 {
     struct io_internal_read_struct iis;
+
     iis.fd = fd;
+    iis.nonblock = 0;
     iis.buf = buf;
     iis.capa = count;
 
@@ -1974,6 +2033,16 @@ rb_io_rewind(VALUE io)
 }
 
 static int
+fptr_wait_readable(rb_io_t *fptr)
+{
+    int ret = rb_io_wait_readable(fptr->fd);
+
+    if (ret)
+        rb_io_check_closed(fptr);
+    return ret;
+}
+
+static int
 io_fillbuf(rb_io_t *fptr)
 {
     ssize_t r;
@@ -1993,7 +2062,7 @@ io_fillbuf(rb_io_t *fptr)
 	    r = rb_read_internal(fptr->fd, fptr->rbuf.ptr, fptr->rbuf.capa);
 	}
         if (r < 0) {
-            if (rb_io_wait_readable(fptr->fd))
+            if (fptr_wait_readable(fptr))
                 goto retry;
 	    {
 		int e = errno;
@@ -2340,7 +2409,7 @@ io_bufread(char *ptr, long len, rb_io_t *fptr)
 	    c = rb_read_internal(fptr->fd, ptr+offset, n);
 	    if (c == 0) break;
 	    if (c < 0) {
-                if (rb_io_wait_readable(fptr->fd))
+                if (fptr_wait_readable(fptr))
                     goto again;
 		return -1;
 	    }
@@ -2696,41 +2765,23 @@ read_all(rb_io_t *fptr, long siz, VALUE str)
 void
 rb_io_set_nonblock(rb_io_t *fptr)
 {
-#ifdef _WIN32
-    if (rb_w32_set_nonblock(fptr->fd) != 0) {
+    if (rb_fd_set_nonblock(fptr->fd) != 0) {
 	rb_sys_fail_path(fptr->pathv);
     }
-#else
-    int oflags;
-#ifdef F_GETFL
-    oflags = fcntl(fptr->fd, F_GETFL);
-    if (oflags == -1) {
-        rb_sys_fail_path(fptr->pathv);
-    }
-#else
-    oflags = 0;
-#endif
-    if ((oflags & O_NONBLOCK) == 0) {
-        oflags |= O_NONBLOCK;
-        if (fcntl(fptr->fd, F_SETFL, oflags) == -1) {
-            rb_sys_fail_path(fptr->pathv);
-        }
-    }
-#endif
 }
-
-struct read_internal_arg {
-    int fd;
-    char *str_ptr;
-    long len;
-};
 
 static VALUE
 read_internal_call(VALUE arg)
 {
-    struct read_internal_arg *p = (struct read_internal_arg *)arg;
-    p->len = rb_read_internal(p->fd, p->str_ptr, p->len);
-    return Qundef;
+    struct io_internal_read_struct *iis = (struct io_internal_read_struct *)arg;
+
+    return rb_thread_io_blocking_region(internal_read_func, iis, iis->fd);
+}
+
+static long
+read_internal_locktmp(VALUE str, struct io_internal_read_struct *iis)
+{
+    return (long)rb_str_locktmp_ensure(str, read_internal_call, (VALUE)iis);
 }
 
 static int
@@ -2749,7 +2800,7 @@ io_getpartial(int argc, VALUE *argv, VALUE io, VALUE opts, int nonblock)
     rb_io_t *fptr;
     VALUE length, str;
     long n, len;
-    struct read_internal_arg arg;
+    struct io_internal_read_struct iis;
     int shrinkable;
 
     rb_scan_args(argc, argv, "11", &length, &str);
@@ -2776,14 +2827,14 @@ io_getpartial(int argc, VALUE *argv, VALUE io, VALUE opts, int nonblock)
             rb_io_set_nonblock(fptr);
         }
 	io_setstrbuf(&str, len);
-	arg.fd = fptr->fd;
-	arg.str_ptr = RSTRING_PTR(str);
-	arg.len = len;
-	rb_str_locktmp_ensure(str, read_internal_call, (VALUE)&arg);
-	n = arg.len;
+        iis.fd = fptr->fd;
+        iis.nonblock = nonblock;
+        iis.buf = RSTRING_PTR(str);
+        iis.capa = len;
+        n = read_internal_locktmp(str, &iis);
         if (n < 0) {
 	    int e = errno;
-            if (!nonblock && rb_io_wait_readable(fptr->fd))
+            if (!nonblock && fptr_wait_readable(fptr))
                 goto again;
 	    if (nonblock && (e == EWOULDBLOCK || e == EAGAIN)) {
                 if (no_exception_p(opts))
@@ -2890,7 +2941,7 @@ io_read_nonblock(VALUE io, VALUE length, VALUE str, VALUE ex)
 {
     rb_io_t *fptr;
     long n, len;
-    struct read_internal_arg arg;
+    struct io_internal_read_struct iis;
     int shrinkable;
 
     if ((len = NUM2LONG(length)) < 0) {
@@ -2909,11 +2960,11 @@ io_read_nonblock(VALUE io, VALUE length, VALUE str, VALUE ex)
     if (n <= 0) {
 	rb_io_set_nonblock(fptr);
 	shrinkable |= io_setstrbuf(&str, len);
-	arg.fd = fptr->fd;
-	arg.str_ptr = RSTRING_PTR(str);
-	arg.len = len;
-	rb_str_locktmp_ensure(str, read_internal_call, (VALUE)&arg);
-	n = arg.len;
+        iis.fd = fptr->fd;
+        iis.nonblock = 1;
+        iis.buf = RSTRING_PTR(str);
+        iis.capa = len;
+        n = read_internal_locktmp(str, &iis);
         if (n < 0) {
 	    int e = errno;
 	    if ((e == EWOULDBLOCK || e == EAGAIN)) {
@@ -4212,8 +4263,18 @@ rb_io_ungetbyte(VALUE io, VALUE b)
     rb_io_check_byte_readable(fptr);
     if (NIL_P(b)) return Qnil;
     if (FIXNUM_P(b)) {
-	char cc = FIX2INT(b);
-	b = rb_str_new(&cc, 1);
+        int i = FIX2INT(b);
+        if (0 <= i && i <= UCHAR_MAX) {
+            unsigned char cc = i & 0xFF;
+            b = rb_str_new((const char *)&cc, 1);
+        }
+        else {
+            rb_raise(rb_eRangeError,
+                "integer %d too big to convert into `unsigned char'", i);
+        }
+    }
+    else if (RB_TYPE_P(b, T_BIGNUM)) {
+        rb_raise(rb_eRangeError, "bignum too big to convert into `unsigned char'");
     }
     else {
 	SafeStringValue(b);
@@ -4527,7 +4588,8 @@ static void free_io_buffer(rb_io_buffer_t *buf);
 static void clear_codeconv(rb_io_t *fptr);
 
 static void
-fptr_finalize_flush(rb_io_t *fptr, int noraise, int keepgvl)
+fptr_finalize_flush(rb_io_t *fptr, int noraise, int keepgvl,
+                    struct list_head *busy)
 {
     VALUE err = Qnil;
     int fd = fptr->fd;
@@ -4558,6 +4620,14 @@ fptr_finalize_flush(rb_io_t *fptr, int noraise, int keepgvl)
     fptr->fd = -1;
     fptr->stdio_file = 0;
     fptr->mode &= ~(FMODE_READABLE|FMODE_WRITABLE);
+
+    /*
+     * ensure waiting_fd users do not hit EBADF, wait for them
+     * to exit before we call close().
+     */
+    if (busy) {
+        do rb_thread_schedule(); while (!list_empty(busy));
+    }
 
     if (IS_PREP_STDIO(fptr) || fd <= 2) {
 	/* need to keep FILE objects of stdin, stdout and stderr */
@@ -4591,7 +4661,7 @@ fptr_finalize_flush(rb_io_t *fptr, int noraise, int keepgvl)
 static void
 fptr_finalize(rb_io_t *fptr, int noraise)
 {
-    fptr_finalize_flush(fptr, noraise, FALSE);
+    fptr_finalize_flush(fptr, noraise, FALSE, 0);
     free_io_buffer(&fptr->rbuf);
     free_io_buffer(&fptr->wbuf);
     clear_codeconv(fptr);
@@ -4716,8 +4786,8 @@ io_close_fptr(VALUE io)
     if (fptr->fd < 0) return 0;
 
     if (rb_notify_fd_close(fptr->fd, &busy)) {
-	fptr_finalize_flush(fptr, FALSE, KEEPGVL); /* calls close(fptr->fd) */
-	do rb_thread_schedule(); while (!list_empty(&busy));
+        /* calls close(fptr->fd): */
+        fptr_finalize_flush(fptr, FALSE, KEEPGVL, &busy);
     }
     rb_io_fptr_cleanup(fptr, FALSE);
     return fptr;
@@ -5059,7 +5129,7 @@ rb_io_sysread(int argc, VALUE *argv, VALUE io)
     VALUE len, str;
     rb_io_t *fptr;
     long n, ilen;
-    struct read_internal_arg arg;
+    struct io_internal_read_struct iis;
     int shrinkable;
 
     rb_scan_args(argc, argv, "11", &len, &str);
@@ -5087,12 +5157,11 @@ rb_io_sysread(int argc, VALUE *argv, VALUE io)
     rb_io_check_closed(fptr);
 
     io_setstrbuf(&str, ilen);
-    rb_str_locktmp(str);
-    arg.fd = fptr->fd;
-    arg.str_ptr = RSTRING_PTR(str);
-    arg.len = ilen;
-    rb_ensure(read_internal_call, (VALUE)&arg, rb_str_unlocktmp, str);
-    n = arg.len;
+    iis.fd = fptr->fd;
+    iis.nonblock = 1; /* for historical reasons, maybe (see above) */
+    iis.buf = RSTRING_PTR(str);
+    iis.capa = ilen;
+    n = read_internal_locktmp(str, &iis);
 
     if (n == -1) {
 	rb_sys_fail_path(fptr->pathv);
@@ -10637,11 +10706,11 @@ struct copy_stream_struct {
 
     int src_fd;
     int dst_fd;
-    int close_src;
-    int close_dst;
+    unsigned close_src : 1;
+    unsigned close_dst : 1;
+    int error_no;
     off_t total;
     const char *syserr;
-    int error_no;
     const char *notimp;
     VALUE th;
 };
@@ -10707,6 +10776,7 @@ nogvl_wait_for_single_fd(int fd, short events)
     return poll(&fds, 1, -1);
 }
 #else /* !USE_POLL */
+#  include "vm_core.h"
 #  define IOWAIT_SYSCALL "select"
 static int
 nogvl_wait_for_single_fd(int fd, short events)
@@ -10725,7 +10795,7 @@ nogvl_wait_for_single_fd(int fd, short events)
         ret = rb_fd_select(fd + 1, 0, &fds, 0, 0);
         break;
       default:
-        assert(0 && "not supported yet, should never get here");
+        VM_UNREACHABLE(nogvl_wait_for_single_fd);
     }
 
     rb_fd_term(&fds);
@@ -10787,22 +10857,23 @@ simple_copy_file_range(int in_fd, off_t *in_offset, int out_fd, off_t *out_offse
 static int
 nogvl_copy_file_range(struct copy_stream_struct *stp)
 {
-    struct stat src_stat, dst_stat;
+    struct stat sb;
     ssize_t ss;
+    off_t src_size;
     int ret;
-
     off_t copy_length, src_offset, *src_offset_ptr;
 
-    ret = fstat(stp->src_fd, &src_stat);
+    ret = fstat(stp->src_fd, &sb);
     if (ret == -1) {
         stp->syserr = "fstat";
         stp->error_no = errno;
         return -1;
     }
-    if (!S_ISREG(src_stat.st_mode))
+    if (!S_ISREG(sb.st_mode))
         return 0;
 
-    ret = fstat(stp->dst_fd, &dst_stat);
+    src_size = sb.st_size;
+    ret = fstat(stp->dst_fd, &sb);
     if (ret == -1) {
         stp->syserr = "fstat";
         stp->error_no = errno;
@@ -10828,10 +10899,10 @@ nogvl_copy_file_range(struct copy_stream_struct *stp)
                 stp->error_no = errno;
                 return -1;
             }
-	    copy_length = src_stat.st_size - current_offset;
+            copy_length = src_size - current_offset;
 	}
 	else {
-	    copy_length = src_stat.st_size - src_offset;
+            copy_length = src_size - src_offset;
 	}
     }
 
@@ -10942,31 +11013,32 @@ simple_sendfile(int out_fd, int in_fd, off_t *offset, off_t count)
 static int
 nogvl_copy_stream_sendfile(struct copy_stream_struct *stp)
 {
-    struct stat src_stat, dst_stat;
+    struct stat sb;
     ssize_t ss;
     int ret;
-
+    off_t src_size;
     off_t copy_length;
     off_t src_offset;
     int use_pread;
 
-    ret = fstat(stp->src_fd, &src_stat);
+    ret = fstat(stp->src_fd, &sb);
     if (ret == -1) {
         stp->syserr = "fstat";
         stp->error_no = errno;
         return -1;
     }
-    if (!S_ISREG(src_stat.st_mode))
+    if (!S_ISREG(sb.st_mode))
         return 0;
 
-    ret = fstat(stp->dst_fd, &dst_stat);
+    src_size = sb.st_size;
+    ret = fstat(stp->dst_fd, &sb);
     if (ret == -1) {
         stp->syserr = "fstat";
         stp->error_no = errno;
         return -1;
     }
 #ifndef __linux__
-    if ((dst_stat.st_mode & S_IFMT) != S_IFSOCK)
+    if ((sb.st_mode & S_IFMT) != S_IFSOCK)
 	return 0;
 #endif
 
@@ -10976,7 +11048,7 @@ nogvl_copy_stream_sendfile(struct copy_stream_struct *stp)
     copy_length = stp->copy_length;
     if (copy_length == (off_t)-1) {
         if (use_pread)
-            copy_length = src_stat.st_size - src_offset;
+            copy_length = src_size - src_offset;
         else {
             off_t cur;
             errno = 0;
@@ -10986,7 +11058,7 @@ nogvl_copy_stream_sendfile(struct copy_stream_struct *stp)
                 stp->error_no = errno;
                 return -1;
             }
-            copy_length = src_stat.st_size - cur;
+            copy_length = src_size - cur;
         }
     }
 

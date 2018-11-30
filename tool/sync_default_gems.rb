@@ -86,18 +86,20 @@ def sync_default_gems(gem)
     `cp -r ../../rubygems/rubygems/lib/rubygems* ./lib`
     `cp -r ../../rubygems/rubygems/test/rubygems ./test`
   when "bundler"
-    `rm -rf lib/bundler* bin/bundler bin/bundle bin/bundle_ruby spec/bundler man/bundle* man/gemfile*`
+    `rm -rf lib/bundler* libexec/bundler libexec/bundle libexec/bundle_ruby spec/bundler man/bundle* man/gemfile*`
     `cp -r ../../bundler/bundler/lib/bundler* ./lib`
-    `cp -r ../../bundler/bundler/exe/bundle* ./bin`
+    `cp -r ../../bundler/bundler/exe/bundle* ./libexec`
     `cp ../../bundler/bundler/bundler.gemspec ./lib`
     `cp -r ../../bundler/bundler/spec spec/bundler`
     `cp -r ../../bundler/bundler/man/*.{1,5,1\.txt,5\.txt,ronn} ./man`
     `rm -rf spec/bundler/support/artifice/vcr_cassettes`
   when "rdoc"
-    `rm -rf lib/rdoc* test/rdoc`
+    `rm -rf lib/rdoc* test/rdoc libexec/rdoc libexec/ri`
     `cp -rf ../rdoc/lib/rdoc* ./lib`
     `cp -rf ../rdoc/test test/rdoc`
     `cp ../rdoc/rdoc.gemspec ./lib/rdoc`
+    `cp -rf ../rdoc/exe/rdoc ./libexec`
+    `cp -rf ../rdoc/exe/ri ./libexec`
     `rm -f lib/rdoc/markdown.kpeg lib/rdoc/markdown/literals.kpeg lib/rdoc/rd/block_parser.ry lib/rdoc/rd/inline_parser.ry`
     `git checkout lib/rdoc/.document`
   when "json"

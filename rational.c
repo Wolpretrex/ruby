@@ -41,6 +41,8 @@ static ID id_abs, id_idiv, id_integer_p,
 #define f_inspect rb_inspect
 #define f_to_s rb_obj_as_string
 
+static VALUE nurat_to_f(VALUE self);
+
 #define binop(n,op) \
 inline static VALUE \
 f_##n(VALUE x, VALUE y)\
@@ -929,8 +931,10 @@ nurat_div(VALUE self, VALUE other)
 			    other, ONE, '/');
 	}
     }
-    else if (RB_FLOAT_TYPE_P(other))
-	return DBL2NUM(nurat_to_double(self) / RFLOAT_VALUE(other));
+    else if (RB_FLOAT_TYPE_P(other)) {
+        VALUE v = nurat_to_f(self);
+        return rb_flo_div_flo(v, other);
+    }
     else if (RB_TYPE_P(other, T_RATIONAL)) {
 	if (f_zero_p(other))
             rb_num_zerodiv();
@@ -951,8 +955,6 @@ nurat_div(VALUE self, VALUE other)
     }
 }
 
-static VALUE nurat_to_f(VALUE self);
-
 /*
  * call-seq:
  *    rat.fdiv(numeric)  ->  float
@@ -968,7 +970,7 @@ nurat_fdiv(VALUE self, VALUE other)
 {
     VALUE div;
     if (f_zero_p(other))
-	return DBL2NUM(nurat_to_double(self) / 0.0);
+        return nurat_div(self, rb_float_new(0.0));
     if (FIXNUM_P(other) && other == LONG2FIX(1))
 	return nurat_to_f(self);
     div = nurat_div(self, other);

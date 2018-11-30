@@ -343,6 +343,11 @@ class TestProcess < Test::Unit::TestCase
   end
 
   def test_execopt_env_path
+    # http://ci.rvm.jp/results/trunk-mjit@silicon-docker/1455223
+    # http://ci.rvm.jp/results/trunk-mjit@silicon-docker/1450027
+    # http://ci.rvm.jp/results/trunk-mjit@silicon-docker/1469867
+    skip 'this randomly fails with MJIT' if RubyVM::MJIT.enabled?
+
     bug8004 = '[ruby-core:53103] [Bug #8004]'
     Dir.mktmpdir do |d|
       open("#{d}/tmp_script.cmd", "w") {|f| f.puts ": ;"; f.chmod(0755)}
@@ -765,6 +770,15 @@ class TestProcess < Test::Unit::TestCase
           Process.wait pid
         end
       }
+
+      # ensure standard FDs we redirect to are blocking for compatibility
+      with_pipes(3) do |pipes|
+        src = 'p [STDIN,STDOUT,STDERR].map(&:nonblock?)'
+        rdr = { 0 => pipes[0][0], 1 => pipes[1][1], 2 => pipes[2][1] }
+        pid = spawn(RUBY, '-rio/nonblock', '-e', src, rdr)
+        assert_equal("[false, false, false]\n", pipes[1][0].gets)
+        Process.wait pid
+      end
     end
   end
 

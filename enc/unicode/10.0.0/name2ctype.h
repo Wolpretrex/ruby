@@ -34756,9 +34756,11 @@ struct uniname2ctype_struct {
 };
 #define uniname2ctype_offset(str) offsetof(struct uniname2ctype_pool_t, uniname2ctype_pool_##str)
 
-#if !1+0
-static const struct uniname2ctype_struct *uniname2ctype_p(const char *, unsigned int);
+static const struct uniname2ctype_struct *uniname2ctype_p(
+#if !(1+0) /* if ANSI, old style not to conflict with generated prototype */
+    const char *, unsigned int
 #endif
+);
 
 #ifndef USE_UNICODE_PROPERTIES
 #define TOTAL_KEYWORDS 15
@@ -38379,3 +38381,12 @@ uniname2ctype(const UChar *name, unsigned int len)
 #define ONIG_UNICODE_VERSION_MAJOR 10
 #define ONIG_UNICODE_VERSION_MINOR 0
 #define ONIG_UNICODE_VERSION_TEENY 0
+#if defined ONIG_UNICODE_EMOJI_VERSION_STRING && !( \
+      ONIG_UNICODE_EMOJI_VERSION_MAJOR == 5 && \
+      ONIG_UNICODE_EMOJI_VERSION_MINOR == 0 && \
+      1)
+# error ONIG_UNICODE_EMOJI_VERSION_STRING mismatch
+#endif
+#define ONIG_UNICODE_EMOJI_VERSION_STRING "5.0"
+#define ONIG_UNICODE_EMOJI_VERSION_MAJOR 5
+#define ONIG_UNICODE_EMOJI_VERSION_MINOR 0

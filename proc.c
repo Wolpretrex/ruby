@@ -2342,7 +2342,7 @@ rb_method_entry_min_max_arity(const rb_method_entry_t *me, int *max)
 	def = def->body.alias.original_me->def;
 	goto again;
       case VM_METHOD_TYPE_BMETHOD:
-	return rb_proc_min_max_arity(def->body.proc, max);
+        return rb_proc_min_max_arity(def->body.bmethod.proc, max);
       case VM_METHOD_TYPE_ISEQ:
 	return rb_iseq_min_max_arity(rb_iseq_check(def->body.iseq.iseqptr), max);
       case VM_METHOD_TYPE_UNDEF:
@@ -2478,8 +2478,8 @@ rb_obj_method_arity(VALUE obj, ID id)
     return rb_mod_method_arity(CLASS_OF(obj), id);
 }
 
-static inline const rb_method_definition_t *
-method_def(VALUE method)
+const rb_method_definition_t *
+rb_method_def(VALUE method)
 {
     const struct METHOD *data;
 
@@ -2494,7 +2494,7 @@ method_def_iseq(const rb_method_definition_t *def)
       case VM_METHOD_TYPE_ISEQ:
 	return rb_iseq_check(def->body.iseq.iseqptr);
       case VM_METHOD_TYPE_BMETHOD:
-	return rb_proc_get_iseq(def->body.proc, 0);
+        return rb_proc_get_iseq(def->body.bmethod.proc, 0);
       case VM_METHOD_TYPE_ALIAS:
 	return method_def_iseq(def->body.alias.original_me->def);
       case VM_METHOD_TYPE_CFUNC:
@@ -2514,13 +2514,13 @@ method_def_iseq(const rb_method_definition_t *def)
 const rb_iseq_t *
 rb_method_iseq(VALUE method)
 {
-    return method_def_iseq(method_def(method));
+    return method_def_iseq(rb_method_def(method));
 }
 
 static const rb_cref_t *
 method_cref(VALUE method)
 {
-    const rb_method_definition_t *def = method_def(method);
+    const rb_method_definition_t *def = rb_method_def(method);
 
   again:
     switch (def->type) {
@@ -2576,7 +2576,7 @@ rb_obj_method_location(VALUE obj, ID id)
 VALUE
 rb_method_location(VALUE method)
 {
-    return method_def_location(method_def(method));
+    return method_def_location(rb_method_def(method));
 }
 
 /*
@@ -3046,6 +3046,136 @@ rb_method_curry(int argc, const VALUE *argv, VALUE self)
     return proc_curry(argc, argv, proc);
 }
 
+static VALUE
+compose(VALUE dummy, VALUE args, int argc, VALUE *argv, VALUE passed_proc)
+{
+    VALUE f, g, fargs;
+    f = RARRAY_AREF(args, 0);
+    g = RARRAY_AREF(args, 1);
+
+    if (rb_obj_is_proc(g))
+        fargs = rb_proc_call_with_block(g, argc, argv, passed_proc);
+    else
+        fargs = rb_funcall_with_block(g, idCall, argc, argv, passed_proc);
+
+    if (rb_obj_is_proc(f))
+        return rb_proc_call(f, rb_ary_new3(1, fargs));
+    else
+        return rb_funcallv(f, idCall, 1, &fargs);
+}
+
+/*
+ *  call-seq:
+ *     prc << g -> a_proc
+ *
+ *  Returns a proc that is the composition of this proc and the given <i>g</i>.
+ *  The returned proc takes a variable number of arguments, calls <i>g</i> with them
+ *  then calls this proc with the result.
+ *
+ *     f = proc {|x| x * x }
+ *     g = proc {|x| x + x }
+ *     p (f << g).call(2) #=> 16
+ */
+static VALUE
+proc_compose_to_left(VALUE self, VALUE g)
+{
+    VALUE proc, args, procs[2];
+    rb_proc_t *procp;
+    int is_lambda;
+
+    procs[0] = self;
+    procs[1] = g;
+    args = rb_ary_tmp_new_from_values(0, 2, procs);
+
+    GetProcPtr(self, procp);
+    is_lambda = procp->is_lambda;
+
+    proc = rb_proc_new(compose, args);
+    GetProcPtr(proc, procp);
+    procp->is_lambda = is_lambda;
+
+    return proc;
+}
+
+/*
+ *  call-seq:
+ *     prc >> g -> a_proc
+ *
+ *  Returns a proc that is the composition of this proc and the given <i>g</i>.
+ *  The returned proc takes a variable number of arguments, calls <i>g</i> with them
+ *  then calls this proc with the result.
+ *
+ *     f = proc {|x| x * x }
+ *     g = proc {|x| x + x }
+ *     p (f >> g).call(2) #=> 8
+ */
+static VALUE
+proc_compose_to_right(VALUE self, VALUE g)
+{
+    VALUE proc, args, procs[2];
+    rb_proc_t *procp;
+    int is_lambda;
+
+    procs[0] = g;
+    procs[1] = self;
+    args = rb_ary_tmp_new_from_values(0, 2, procs);
+
+    GetProcPtr(self, procp);
+    is_lambda = procp->is_lambda;
+
+    proc = rb_proc_new(compose, args);
+    GetProcPtr(proc, procp);
+    procp->is_lambda = is_lambda;
+
+    return proc;
+}
+
+/*
+ *  call-seq:
+ *     meth << g -> a_proc
+ *
+ *  Returns a proc that is the composition of this method and the given <i>g</i>.
+ *  The returned proc takes a variable number of arguments, calls <i>g</i> with them
+ *  then calls this method with the result.
+ *
+ *     def f(x)
+ *       x * x
+ *     end
+ *
+ *     f = self.method(:f)
+ *     g = proc {|x| x + x }
+ *     p (f << g).call(2) #=> 16
+ */
+static VALUE
+rb_method_compose_to_left(VALUE self, VALUE g)
+{
+    VALUE proc = method_to_proc(self);
+    return proc_compose_to_left(proc, g);
+}
+
+/*
+ *  call-seq:
+ *     meth >> g -> a_proc
+ *
+ *  Returns a proc that is the composition of this method and the given <i>g</i>.
+ *  The returned proc takes a variable number of arguments, calls <i>g</i> with them
+ *  then calls this method with the result.
+ *
+ *     def f(x)
+ *       x * x
+ *     end
+ *
+ *     f = self.method(:f)
+ *     g = proc {|x| x + x }
+ *     p (f >> g).call(2) #=> 8
+ */
+static VALUE
+rb_method_compose_to_right(VALUE self, VALUE g)
+{
+    VALUE proc = method_to_proc(self);
+    return proc_compose_to_right(proc, g);
+}
+
 /*
  *  Document-class: LocalJumpError
  *
@@ -3142,6 +3272,8 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "lambda?", rb_proc_lambda_p, 0);
     rb_define_method(rb_cProc, "binding", proc_binding, 0);
     rb_define_method(rb_cProc, "curry", proc_curry, -1);
+    rb_define_method(rb_cProc, "<<", proc_compose_to_left, 1);
+    rb_define_method(rb_cProc, ">>", proc_compose_to_right, 1);
     rb_define_method(rb_cProc, "source_location", rb_proc_location, 0);
     rb_define_method(rb_cProc, "parameters", rb_proc_parameters, 0);
 
@@ -3168,6 +3300,8 @@ Init_Proc(void)
     rb_define_method(rb_cMethod, "call", rb_method_call, -1);
     rb_define_method(rb_cMethod, "===", rb_method_call, -1);
     rb_define_method(rb_cMethod, "curry", rb_method_curry, -1);
+    rb_define_method(rb_cMethod, "<<", rb_method_compose_to_left, 1);
+    rb_define_method(rb_cMethod, ">>", rb_method_compose_to_right, 1);
     rb_define_method(rb_cMethod, "[]", rb_method_call, -1);
     rb_define_method(rb_cMethod, "arity", method_arity_m, 0);
     rb_define_method(rb_cMethod, "inspect", method_inspect, 0);

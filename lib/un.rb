@@ -313,6 +313,8 @@ end
 #   --do-not-reverse-lookup     disable reverse lookup
 #   --request-timeout=SECOND    request timeout in seconds
 #   --http-version=VERSION      HTTP version
+#   --server-name=NAME          name of the server host
+#   --server-software=NAME      name and version of the server
 #   --ssl-certificate=CERT      The SSL certificate file for the server
 #   --ssl-private-key=KEY       The SSL private key file for the server certificate
 #   -v                          verbose
@@ -321,6 +323,7 @@ end
 def httpd
   setup("", "BindAddress=ADDR", "Port=PORT", "MaxClients=NUM", "TempDir=DIR",
         "DoNotReverseLookup", "RequestTimeout=SECOND", "HTTPVersion=VERSION",
+        "ServerName=NAME", "ServerSoftware=NAME",
         "SSLCertificate=CERT", "SSLPrivateKey=KEY") do
     |argv, options|
     require 'webrick'

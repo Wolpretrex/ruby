@@ -147,6 +147,11 @@ typedef struct rb_method_refined_struct {
     VALUE owner;
 } rb_method_refined_t;
 
+typedef struct rb_method_bmethod_struct {
+    const VALUE proc; /* should be marked */
+    struct rb_hook_list_struct *hooks;
+} rb_method_bmethod_t;
+
 enum method_optimized_type {
     OPTIMIZED_METHOD_TYPE_SEND,
     OPTIMIZED_METHOD_TYPE_CALL,
@@ -165,8 +170,8 @@ PACKED_STRUCT_UNALIGNED(struct rb_method_definition_struct {
 	rb_method_attr_t attr;
 	rb_method_alias_t alias;
 	rb_method_refined_t refined;
+        rb_method_bmethod_t bmethod;
 
-	VALUE proc;                 /* should be marked */
 	enum method_optimized_type optimize_type;
     } body;
 

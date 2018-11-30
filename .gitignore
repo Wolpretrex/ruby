@@ -4,6 +4,7 @@
 *.a
 *.bak
 *.bc
+*.bundle
 *.dSYM
 *.dmyh
 *.dylib
@@ -20,6 +21,8 @@
 *.rej
 *.s
 *.sav
+*.sl
+*.so
 *.swp
 *.yarb
 *~
@@ -92,6 +95,7 @@ lcov*.info
 /libruby*.*
 /miniprelude.c
 /miniruby
+/mjit_build_dir.c
 /newdate.rb
 /newline.c
 /newver.rb
@@ -138,6 +142,10 @@ lcov*.info
 /enc/*.lib
 /enc/jis/props.h
 /enc/unicode/data
+
+# /coroutine/
+!/coroutine/**/*.s
+/coroutine/**/.time
 
 # /enc/trans/
 /enc/trans/*.c

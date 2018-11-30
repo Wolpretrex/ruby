@@ -143,6 +143,9 @@ XRUBY_RUBYLIBDIR = @XRUBY_RUBYLIBDIR@
 XRUBY_RUBYHDRDIR = @XRUBY_RUBYHDRDIR@
 BOOTSTRAPRUBY = @BOOTSTRAPRUBY@
 
+COROUTINE_H = @X_FIBER_COROUTINE_H@
+COROUTINE_OBJ = $(COROUTINE_H:.h=.@OBJEXT@)
+
 #### End of system configuration section. ####
 
 MAJOR=	@MAJOR@
@@ -241,7 +244,7 @@ DESTDIR       = @DESTDIR@
 configure_args = @configure_args@
 #### End of variables
 
-.SUFFIXES: .inc .h .c .y .i .$(DTRACE_EXT)
+.SUFFIXES: .inc .h .c .y .i .$(ASMEXT) .$(DTRACE_EXT)
 
 all:
 
@@ -340,12 +343,13 @@ uncommon.mk: $(srcdir)/common.mk
 .PHONY: reconfig
 reconfig-args = $(srcdir)/$(CONFIGURE) $(configure_args)
 config.status-args = ./config.status --recheck
-reconfig-exec-0 = test -t 1 && { CONFIGURE_TTY=yes; export CONFIGURE_TTY; }; exec 3>&1; exit `exec 4>&1; { "$$@" 3>&- 4>&-; echo $$? 1>&4; } | fgrep -v '(cached)' 1>&3 3>&- 4>&-`
+reconfig-exec-0 = test -t 1 && { : $${CONFIGURE_TTY=yes}; export CONFIGURE_TTY; }; exec 3>&1; exit `exec 4>&1; { "$$@" 3>&- 4>&-; echo $$? 1>&4; } | fgrep -v '(cached)' 1>&3 3>&- 4>&-`
 reconfig-exec-1 = set -x; "$$@"
 
 reconfig config.status:	$(srcdir)/$(CONFIGURE) $(srcdir)/enc/Makefile.in \
 			$(srcdir)/include/ruby/version.h
 	@PWD= MINIRUBY="$(MINIRUBY)"; export MINIRUBY; \
+	warnflags="@warnflags@"; export warnflags; \
 	set $(SHELL) $($@-args); $(reconfig-exec-$(V))
 
 $(srcdir)/$(CONFIGURE): $(srcdir)/configure.ac $(srcdir)/aclocal.m4
@@ -403,11 +407,11 @@ $(srcdir)/enc/jis/props.h: enc/jis/props.kwd
 	@$(ECHO) compiling $<
 	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $<
 
-.s.@OBJEXT@:
+.$(ASMEXT).@OBJEXT@:
 	@$(ECHO) assembling $<
-	$(Q) $(AS) $(ASFLAGS) -o $@ $<
+	$(Q) $(CC) $(ASFLAGS) -o $@ -c $<
 
-.c.S:
+.c.$(ASMEXT):
 	@$(ECHO) translating $<
 	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -S $<
 
@@ -458,7 +462,7 @@ clean-local::
 	$(Q)$(RM) ext/extinit.c ext/extinit.$(OBJEXT) ext/ripper/y.output \
 		enc/encinit.c enc/encinit.$(OBJEXT)
 	-$(Q)$(RM) $(pkgconfig_DATA)
-	-$(Q)$(RMALL) exe/ ruby-runner.h *.dSYM
+	-$(Q)$(RMALL) exe/ ruby-runner.$(OBJEXT) ruby-runner.h *.dSYM
 
 distclean-local::
 	$(Q)$(RM) ext/config.cache $(RBCONFIG) Doxyfile
@@ -515,6 +519,8 @@ ext/extinit.$(OBJEXT): ext/extinit.c $(SETUP)
 
 enc/encinit.$(OBJEXT): enc/encinit.c $(SETUP)
 
+cont.$(OBJEXT): $(COROUTINE_H)
+
 test-bundled-gems-run:
 	$(Q) set -e; while read gem _; do \
 	  echo testing $$gem gem && \
@@ -556,6 +562,10 @@ update-simplecov:
 
 update-coverage: update-simplecov update-simplecov-html update-doclie
 
+update-known-errors:
+	errno --list | cut -d' ' -f1 | sort -u - $(srcdir)/defs/known_errors.def | \
+	$(IFCHANGE) $(srcdir)/defs/known_errors.def -
+
 INSNS	= opt_sc.inc optinsn.inc optunifs.inc insns.inc insns_info.inc \
 	  vmtc.inc vm.inc mjit_compile.inc
 
@@ -579,31 +589,9 @@ un-runnable:
 mjit_config.h:
 	$(ECHO) making $@
 	@{ \
-	quote() { \
-	    printf "#define $$1"; shift; \
-	    $${1+printf} $${1+' "%s"'$$sep} $${1+"$$@"}; \
-	    echo; \
-	}; \
-	parse_arch_flag() { \
-	    while [ "$$#" -gt 0 ]; do \
-	        case "$$1" in \
-	        -arch) \
-	            shift; \
-	            archs="$${archs:+$$archs }$$1"; \
-	            shift; \
-	            ;; \
-	        *) \
-	            arch_flag="$${arch_flag:+$${arch_flag} }$$1"; \
-	            shift; \
-	            ;; \
-	        esac; \
-	    done; \
-	}; \
+	. $(srcdir)/tool/mjit_archflag.sh; \
+	parse_arch_flags "$(UNIVERSAL_ARCHNAMES)" $(ARCH_FLAG); \
 	test "$(Q)" = @ || set -x; \
-	archs="$(UNIVERSAL_ARCHNAMES)"; \
-	arch_flag=""; \
-	parse_arch_flag $(ARCH_FLAG); \
-	need_mjit_archflag="$${archs}$${arch_flag}"; \
 	echo '#ifndef RUBY_MJIT_CONFIG_H'; \
 	echo '#define RUBY_MJIT_CONFIG_H 1'; \
 	echo; \
@@ -611,28 +599,20 @@ mjit_config.h:
 	quote MJIT_MIN_HEADER_NAME "/$(MJIT_HEADER_INSTALL_DIR)/$(MJIT_MIN_HEADER_NAME)"; \
 	sep=,; \
 	quote "MJIT_CC_COMMON  " $(MJIT_CC); \
-	quote "MJIT_CFLAGS     $${need_mjit_archflag:+ MJIT_ARCHFLAG}" $(MJIT_CFLAGS); \
+	quote "MJIT_CFLAGS      MJIT_ARCHFLAG" $(MJIT_CFLAGS); \
 	quote "MJIT_OPTFLAGS   " $(MJIT_OPTFLAGS); \
 	quote "MJIT_DEBUGFLAGS " $(MJIT_DEBUGFLAGS); \
 	quote "MJIT_LDSHARED   " $(MJIT_LDSHARED); \
-	quote "MJIT_DLDFLAGS   $${need_mjit_archflag:+ MJIT_ARCHFLAG}" $(MJIT_DLDFLAGS); \
+	quote "MJIT_DLDFLAGS    MJIT_ARCHFLAG" $(MJIT_DLDFLAGS); \
 	quote "MJIT_LIBS       " $(LIBRUBYARG_SHARED); \
 	quote 'PRELOADENV       "@PRELOADENV@"'; \
-	$${archs:+echo} $${archs:+'#if 0'}; \
-	for arch in $$archs; do \
-	    echo "#elif defined __$${arch%=*}__"; \
-	    quote "  MJIT_ARCHFLAG " -arch $${arch%=*}; \
-	done; \
-	$${archs:+echo} $${archs:+'#else'}; \
-	if [ "$${arch_flag}" != "" ]; then \
-	    quote "  MJIT_ARCHFLAG " $${arch_flag}; \
-	fi; \
-	$${archs:+echo} $${archs:+'#endif'}; \
+	indent=$${archs:+'  '}; \
+	define_arch_flags; \
 	echo; \
 	echo '#endif /* RUBY_MJIT_CONFIG_H */'; \
 	} > $@
 
-yes-test-all: mjit_build_dir.$(SOEXT)
+yes-test-almost yes-test-all: mjit_build_dir.$(SOEXT)
 mjit_build_dir.$(SOEXT): $(MJIT_MIN_HEADER)
 	$(ECHO) making $@
 	$(Q) { \
