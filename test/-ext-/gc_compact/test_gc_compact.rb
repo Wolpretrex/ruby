@@ -70,4 +70,18 @@ class TestGCCompact < Test::Unit::TestCase
     # These two should be the same! but they are not :(
     assert_equal int, ObjectSpace._id2ref(int.object_id)
   end
+
+  def test_many_collisions
+    list_of_objects = big_list
+    ids       = list_of_objects.map(&:object_id)
+    addresses = list_of_objects.map(&:memory_location)
+
+    GC.compact
+
+    new_tenants = 10.times.map {
+      find_object_in_recycled_slot(addresses)
+    }
+
+    assert_operator GC.stat(:object_id_collisions), :>, 0
+  end
 end

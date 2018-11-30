@@ -586,6 +586,7 @@ typedef struct rb_objspace {
 #if USE_RGENGC
 	size_t minor_gc_count;
 	size_t major_gc_count;
+	size_t object_id_collisions;
 #if RGENGC_PROFILE > 0
 	size_t total_generated_normal_object_count;
 	size_t total_generated_shady_object_count;
@@ -3369,12 +3370,14 @@ rb_obj_id(VALUE obj)
 	int tries;
 	id = nonspecial_obj_id(obj);
 
-	for(tries = 0; tries < 50; tries += 1) {
+	while(1) {
 	    /* id is the object id */
 	    if (st_lookup(id_to_obj_tbl, (st_data_t)id, 0)) {
 #ifdef GC_COMPACT_DEBUG
 		fprintf(stderr, "object_id called on %p, but there was a collision at %d\n", obj, NUM2INT(id));
 #endif
+		rb_objspace_t *objspace = &rb_objspace;
+		objspace->profile.object_id_collisions++;
 		/* Fixnum LSB is always 1, so increment by 2 */
 		id += 40;
 	    } else {
@@ -8117,6 +8120,7 @@ enum gc_stat_sym {
 #if USE_RGENGC
     gc_stat_sym_minor_gc_count,
     gc_stat_sym_major_gc_count,
+    gc_stat_sym_object_id_collisions,
     gc_stat_sym_remembered_wb_unprotected_objects,
     gc_stat_sym_remembered_wb_unprotected_objects_limit,
     gc_stat_sym_old_objects,
@@ -8192,6 +8196,7 @@ setup_gc_stat_symbols(void)
 	S(malloc_increase_bytes_limit);
 #if USE_RGENGC
 	S(minor_gc_count);
+	S(object_id_collisions);
 	S(major_gc_count);
 	S(remembered_wb_unprotected_objects);
 	S(remembered_wb_unprotected_objects_limit);
@@ -8364,6 +8369,7 @@ gc_stat_internal(VALUE hash_or_sym)
     SET(malloc_increase_bytes_limit, malloc_limit);
 #if USE_RGENGC
     SET(minor_gc_count, objspace->profile.minor_gc_count);
+    SET(object_id_collisions, objspace->profile.object_id_collisions);
     SET(major_gc_count, objspace->profile.major_gc_count);
     SET(remembered_wb_unprotected_objects, objspace->rgengc.uncollectible_wb_unprotected_objects);
     SET(remembered_wb_unprotected_objects_limit, objspace->rgengc.uncollectible_wb_unprotected_objects_limit);
