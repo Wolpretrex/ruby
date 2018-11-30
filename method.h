@@ -148,7 +148,7 @@ typedef struct rb_method_refined_struct {
 } rb_method_refined_t;
 
 typedef struct rb_method_bmethod_struct {
-    const VALUE proc; /* should be marked */
+    VALUE proc; /* should be marked */
     struct rb_hook_list_struct *hooks;
 } rb_method_bmethod_t;
 

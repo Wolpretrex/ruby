@@ -7469,7 +7469,7 @@ gc_ref_update_method_entry(rb_objspace_t *objspace, rb_method_entry_t *me)
 	    UPDATE_IF_MOVED(objspace, def->body.attr.location);
 	    break;
 	  case VM_METHOD_TYPE_BMETHOD:
-	    UPDATE_IF_MOVED(objspace, def->body.proc);
+            UPDATE_IF_MOVED(objspace, def->body.bmethod.proc);
 	    break;
 	  case VM_METHOD_TYPE_ALIAS:
 	    UPDATE_IF_MOVED(objspace, def->body.alias.original_me);
