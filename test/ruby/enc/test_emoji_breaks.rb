@@ -25,16 +25,12 @@ class BreakTest
                           # raise ArgumentError if 0xD800 <= c and c <= 0xDFFF
                           c.chr('UTF-8')
                         end.join
-    raise ArgumentError if data.match? /genie/ or comment.match? /genie/
-    raise ArgumentError if data.match? /zombie/ or comment.match? /zombie/
-    raise ArgumentError if data.match? /wrestling/ or comment.match? /wrestling/
   end
 end
 
 class TestEmojiBreaks < Test::Unit::TestCase
   EMOJI_DATA_FILES = %w[emoji-sequences emoji-test emoji-variation-sequences emoji-zwj-sequences]
-  EMOJI_VERSION = '5.0' # hard-coded, should be replaced by
-                        # RbConfig::CONFIG['UNICODE_EMOJI_VERSION'] or so, see feature #15341
+  EMOJI_VERSION = RbConfig::CONFIG['UNICODE_EMOJI_VERSION']
   EMOJI_DATA_PATH = File.expand_path("../../../enc/unicode/data/emoji/#{EMOJI_VERSION}", __dir__)
 
   def self.expand_filename(basename)
@@ -91,8 +87,8 @@ TestEmojiBreaks.data_files_available? and  class TestEmojiBreaks
 
   def test_embedded_emoji
     all_tests.each do |test|
-      expected = ["A", test.string, "Z"]
-      actual = "A#{test.string}Z".each_grapheme_cluster.to_a
+      expected = ["\t", test.string, "\t"]
+      actual = "\t#{test.string}\t".each_grapheme_cluster.to_a
       assert_equal expected, actual,
         "file: #{test.filename}, line #{test.line_number}, " +
         "type: #{test.type}, shortname: #{test.shortname}, comment: #{test.comment}"
@@ -103,11 +99,13 @@ TestEmojiBreaks.data_files_available? and  class TestEmojiBreaks
   def test_mixed_emoji
     srand 0
     length = all_tests.length
-    step = 503 # use a prime number
+    step =  503 # use a prime number
     all_tests.each do |test1|
       start = rand step
       start.step(by: step, to: length-1) do |t2|
         test2 = all_tests[t2]
+        # exclude skin tones, because they glue to previous grapheme clusters
+        next  if (0x1F3FB..0x1F3FF).include? test2.string.ord
         expected = [test1.string, test2.string]
         actual = (test1.string+test2.string).each_grapheme_cluster.to_a
         assert_equal expected, actual,

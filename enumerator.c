@@ -169,7 +169,7 @@ struct enum_chain {
     long pos;
 };
 
-static VALUE rb_cArithSeq;
+VALUE rb_cArithSeq;
 
 /*
  * Enumerator
@@ -604,12 +604,9 @@ enumerator_with_index(int argc, VALUE *argv, VALUE obj)
 {
     VALUE memo;
 
-    rb_scan_args(argc, argv, "01", &memo);
+    rb_check_arity(argc, 0, 1);
     RETURN_SIZED_ENUMERATOR(obj, argc, argv, enumerator_enum_size);
-    if (NIL_P(memo))
-	memo = INT2FIX(0);
-    else
-	memo = rb_to_int(memo);
+    memo = (!argc || NIL_P(memo = argv[0])) ? INT2FIX(0) : rb_to_int(memo);
     return enumerator_block_call(obj, enumerator_with_index_i, (VALUE)MEMO_NEW(memo, 0, 0));
 }
 
@@ -2530,23 +2527,20 @@ static VALUE
 enum_chain_total_size(VALUE enums)
 {
     VALUE total = INT2FIX(0);
+    long i;
 
-    RARRAY_PTR_USE(enums, ptr, {
-        long i;
+    for (i = 0; i < RARRAY_LEN(enums); i++) {
+        VALUE size = enum_size(RARRAY_AREF(enums, i));
 
-        for (i = 0; i < RARRAY_LEN(enums); i++) {
-            VALUE size = enum_size(ptr[i]);
-
-            if (NIL_P(size) || (RB_TYPE_P(size, T_FLOAT) && isinf(NUM2DBL(size)))) {
-                return size;
-            }
-            if (!RB_INTEGER_TYPE_P(size)) {
-                return Qnil;
-            }
-
-            total = rb_funcall(total, '+', 1, size);
+        if (NIL_P(size) || (RB_TYPE_P(size, T_FLOAT) && isinf(NUM2DBL(size)))) {
+            return size;
         }
-    });
+        if (!RB_INTEGER_TYPE_P(size)) {
+            return Qnil;
+        }
+
+        total = rb_funcall(total, '+', 1, size);
+    }
 
     return total;
 }
@@ -2601,6 +2595,7 @@ enum_chain_each(int argc, VALUE *argv, VALUE obj)
 {
     VALUE enums, block;
     struct enum_chain *objptr;
+    long i;
 
     RETURN_SIZED_ENUMERATOR(obj, argc, argv, argc > 0 ? enum_chain_enum_no_size : enum_chain_enum_size);
 
@@ -2608,14 +2603,11 @@ enum_chain_each(int argc, VALUE *argv, VALUE obj)
     enums = objptr->enums;
     block = rb_block_proc();
 
-    RARRAY_PTR_USE(enums, ptr, {
-        long i;
 
-        for (i = 0; i < RARRAY_LEN(enums); i++) {
-            objptr->pos = i;
-            rb_block_call(ptr[i], id_each, argc, argv, enum_chain_yield_block, block);
-        }
-    });
+    for (i = 0; i < RARRAY_LEN(enums); i++) {
+        objptr->pos = i;
+        rb_block_call(RARRAY_AREF(enums, i), id_each, argc, argv, enum_chain_yield_block, block);
+    }
 
     return obj;
 }
@@ -2633,14 +2625,11 @@ enum_chain_rewind(VALUE obj)
 {
     struct enum_chain *objptr = enum_chain_ptr(obj);
     VALUE enums = objptr->enums;
+    long i;
 
-    RARRAY_PTR_USE(enums, ptr, {
-        long i;
-
-        for (i = objptr->pos; 0 <= i && i < RARRAY_LEN(enums); objptr->pos = --i) {
-            rb_check_funcall(ptr[i], id_rewind, 0, 0);
-        }
-    });
+    for (i = objptr->pos; 0 <= i && i < RARRAY_LEN(enums); objptr->pos = --i) {
+        rb_check_funcall(RARRAY_AREF(enums, i), id_rewind, 0, 0);
+    }
 
     return obj;
 }
@@ -2786,6 +2775,27 @@ static inline int
 arith_seq_exclude_end_p(VALUE self)
 {
     return RTEST(arith_seq_exclude_end(self));
+}
+
+int
+rb_arithmetic_sequence_extract(VALUE obj, rb_arithmetic_sequence_components_t *component)
+{
+    if (rb_obj_is_kind_of(obj, rb_cArithSeq)) {
+        component->begin = arith_seq_begin(obj);
+        component->end   = arith_seq_end(obj);
+        component->step  = arith_seq_step(obj);
+        component->exclude_end = arith_seq_exclude_end_p(obj);
+        return 1;
+    }
+    else if (rb_obj_is_kind_of(obj, rb_cRange)) {
+        component->begin = RANGE_BEG(obj);
+        component->end   = RANGE_END(obj);
+        component->step  = INT2FIX(1);
+        component->exclude_end = RTEST(RANGE_EXCL(obj));
+        return 1;
+    }
+
+    return 0;
 }
 
 /*
@@ -3020,6 +3030,8 @@ arith_seq_hash(VALUE self)
     return LONG2FIX(hash);
 }
 
+#define NUM_GE(x, y) RTEST(rb_num_coerce_relop((x), (y), idGE))
+
 struct arith_seq_gen {
     VALUE current;
     VALUE end;
@@ -3073,13 +3085,13 @@ arith_seq_each(VALUE self)
     }
 
     if (rb_num_negative_int_p(s)) {
-        while (RTEST(rb_int_ge(c, last))) {
+        while (NUM_GE(c, last)) {
             rb_yield(c);
             c = rb_int_plus(c, s);
         }
     }
     else {
-        while (RTEST(rb_int_ge(last, c))) {
+        while (NUM_GE(last, c)) {
             rb_yield(c);
             c = rb_int_plus(c, s);
         }

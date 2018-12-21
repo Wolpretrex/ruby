@@ -743,13 +743,11 @@ def load_gemspec(file)
   file = File.realpath(file)
   code = File.read(file, encoding: "utf-8:-")
   code.gsub!(/`git.*?`/m, '""')
-  begin
-    spec = eval(code, binding, file)
-  rescue SignalException, SystemExit
-    raise
-  rescue SyntaxError, Exception
+  code.gsub!(/%x\[git.*?\]/m, '""')
+  spec = eval(code, binding, file)
+  unless Gem::Specification === spec
+    raise TypeError, "[#{file}] isn't a Gem::Specification (#{spec.class} instead)."
   end
-  raise("invalid spec in #{file}") unless spec
   spec.loaded_from = file
   spec
 end
@@ -781,8 +779,8 @@ def install_default_gem(dir, srcdir)
       makedirs(bin_dir)
 
       gemspec.executables.map {|exec|
-        $script_installer.install(File.join(srcdir, 'libexec', exec),
-                                  File.join(bin_dir, exec))
+        install File.join(srcdir, 'libexec', exec),
+                File.join(bin_dir, exec)
       }
     end
   end

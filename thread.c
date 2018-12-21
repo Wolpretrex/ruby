@@ -419,6 +419,7 @@ rb_vm_gvl_destroy(rb_vm_t *vm)
     if (0) {
         /* may be held by running threads */
         rb_native_mutex_destroy(&vm->waitpid_lock);
+        rb_native_mutex_destroy(&vm->workqueue_lock);
     }
 }
 
@@ -1110,19 +1111,18 @@ thread_join_m(int argc, VALUE *argv, VALUE self)
     VALUE limit;
     rb_hrtime_t rel, *to = 0;
 
-    rb_scan_args(argc, argv, "01", &limit);
-
     /*
      * This supports INFINITY and negative values, so we can't use
      * rb_time_interval right now...
      */
-    switch (TYPE(limit)) {
-      case T_NIL: break;
-      case T_FIXNUM:
+    if (!rb_check_arity(argc, 0, 1) || NIL_P(argv[0])) {
+        /* unlimited */
+    }
+    else if (FIXNUM_P(limit = argv[0])) {
         rel = rb_sec2hrtime(NUM2TIMET(limit));
         to = &rel;
-        break;
-      default:
+    }
+    else {
         to = double2hrtime(&rel, rb_num2dbl(limit));
     }
 
@@ -2040,20 +2040,19 @@ rb_thread_pending_interrupt_p(int argc, VALUE *argv, VALUE target_thread)
     if (rb_threadptr_pending_interrupt_empty_p(target_th)) {
 	return Qfalse;
     }
+    if (rb_check_arity(argc, 0, 1)) {
+        VALUE err = argv[0];
+        if (!rb_obj_is_kind_of(err, rb_cModule)) {
+            rb_raise(rb_eTypeError, "class or module required for rescue clause");
+        }
+        if (rb_threadptr_pending_interrupt_include_p(target_th, err)) {
+            return Qtrue;
+        }
+        else {
+            return Qfalse;
+        }
+    }
     else {
-	if (argc == 1) {
-	    VALUE err;
-	    rb_scan_args(argc, argv, "01", &err);
-	    if (!rb_obj_is_kind_of(err, rb_cModule)) {
-		rb_raise(rb_eTypeError, "class or module required for rescue clause");
-	    }
-	    if (rb_threadptr_pending_interrupt_include_p(target_th, err)) {
-		return Qtrue;
-	    }
-	    else {
-		return Qfalse;
-	    }
-	}
 	return Qtrue;
     }
 }
@@ -4422,6 +4421,7 @@ rb_thread_atfork_internal(rb_thread_t *th, void (*atfork)(rb_thread_t *, const r
 
     /* may be held by MJIT threads in parent */
     rb_native_mutex_initialize(&vm->waitpid_lock);
+    rb_native_mutex_initialize(&vm->workqueue_lock);
 
     /* may be held by any thread in parent */
     rb_native_mutex_initialize(&th->interrupt_lock);
@@ -5183,6 +5183,7 @@ Init_Thread(void)
 	    gvl_init(th->vm);
 	    gvl_acquire(th->vm, th);
             rb_native_mutex_initialize(&th->vm->waitpid_lock);
+            rb_native_mutex_initialize(&th->vm->workqueue_lock);
             rb_native_mutex_initialize(&th->interrupt_lock);
 
 	    th->pending_interrupt_queue = rb_ary_tmp_new(0);

@@ -1293,6 +1293,8 @@ eval_make_iseq(VALUE src, VALUE fname, int line, const rb_binding_t *bind,
 	printf("%s\n", StringValuePtr(disasm));
     }
 
+    EXEC_EVENT_HOOK(GET_EC(), RUBY_EVENT_SCRIPT_COMPILED, GET_EC()->cfp->self, 0, 0, 0,
+                    rb_ary_new_from_args(2, src, (VALUE)iseq));
     return iseq;
 }
 
@@ -1949,16 +1951,9 @@ catch_i(VALUE tag, VALUE data)
  */
 
 static VALUE
-rb_f_catch(int argc, VALUE *argv)
+rb_f_catch(int argc, VALUE *argv, VALUE self)
 {
-    VALUE tag;
-
-    if (argc == 0) {
-	tag = rb_obj_alloc(rb_cObject);
-    }
-    else {
-	rb_scan_args(argc, argv, "01", &tag);
-    }
+    VALUE tag = rb_check_arity(argc, 0, 1) ? argv[0] : rb_obj_alloc(rb_cObject);
     return rb_catch_obj(tag, catch_i, 0);
 }
 

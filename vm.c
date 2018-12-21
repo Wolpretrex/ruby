@@ -229,6 +229,12 @@ vm_cref_new_use_prev(VALUE klass, rb_method_visibility_t visi, int module_func, 
     return vm_cref_new0(klass, visi, module_func, prev_cref, pushed_by_eval, TRUE);
 }
 
+static int
+ref_delete_symkey(VALUE key, VALUE value, VALUE unused)
+{
+    return SYMBOL_P(key) ? ST_DELETE : ST_CONTINUE;
+}
+
 static rb_cref_t *
 vm_cref_dup(const rb_cref_t *cref)
 {
@@ -240,7 +246,9 @@ vm_cref_dup(const rb_cref_t *cref)
     new_cref = vm_cref_new(klass, visi->method_visi, visi->module_func, next_cref, pushed_by_eval);
 
     if (!NIL_P(CREF_REFINEMENTS(cref))) {
-	CREF_REFINEMENTS_SET(new_cref, rb_hash_dup(CREF_REFINEMENTS(cref)));
+        VALUE ref = rb_hash_dup(CREF_REFINEMENTS(cref));
+        rb_hash_foreach(ref, ref_delete_symkey, Qnil);
+        CREF_REFINEMENTS_SET(new_cref, ref);
 	CREF_OMOD_SHARED_UNSET(new_cref);
     }
 
@@ -422,7 +430,8 @@ vm_stat(int argc, VALUE *argv, VALUE self)
     VALUE arg = Qnil;
     VALUE hash = Qnil, key = Qnil;
 
-    if (rb_scan_args(argc, argv, "01", &arg) == 1) {
+    if (rb_check_arity(argc, 0, 1) == 1) {
+        arg = argv[0];
 	if (SYMBOL_P(arg))
 	    key = arg;
 	else if (RB_TYPE_P(arg, T_HASH))
@@ -1713,7 +1722,7 @@ hook_before_rewind(rb_execution_context_t *ec, const rb_control_frame_t *cfp,
     }
     else {
         const rb_iseq_t *iseq = cfp->iseq;
-        rb_hook_list_t *local_hooks = iseq->local_hooks;
+        rb_hook_list_t *local_hooks = iseq->aux.exec.local_hooks;
 
         switch (VM_FRAME_TYPE(ec->cfp)) {
           case VM_FRAME_MAGIC_METHOD:
@@ -2898,6 +2907,8 @@ static VALUE usage_analysis_operand_stop(VALUE self);
 static VALUE usage_analysis_register_stop(VALUE self);
 #endif
 
+VALUE rb_resolve_feature_path(VALUE klass, VALUE fname);
+
 void
 Init_VM(void)
 {
@@ -3200,6 +3211,8 @@ Init_VM(void)
 
     /* vm_backtrace.c */
     Init_vm_backtrace();
+
+    rb_define_singleton_method(rb_cRubyVM, "resolve_feature_path", rb_resolve_feature_path, 1);
 }
 
 void

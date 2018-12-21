@@ -760,44 +760,44 @@ struct RComplex {
 
 enum ruby_rhash_flags {
     RHASH_ST_TABLE_FLAG = FL_USER3,
-    RHASH_ARRAY_MAX_SIZE = 8,
-    RHASH_ARRAY_SIZE_MASK = (FL_USER4|FL_USER5|FL_USER6|FL_USER7),
-    RHASH_ARRAY_SIZE_SHIFT = (FL_USHIFT+4),
-    RHASH_ARRAY_BOUND_MASK = (FL_USER8|FL_USER9|FL_USER10|FL_USER11),
-    RHASH_ARRAY_BOUND_SHIFT = (FL_USHIFT+8),
+    RHASH_AR_TABLE_MAX_SIZE = 8,
+    RHASH_AR_TABLE_SIZE_MASK = (FL_USER4|FL_USER5|FL_USER6|FL_USER7),
+    RHASH_AR_TABLE_SIZE_SHIFT = (FL_USHIFT+4),
+    RHASH_AR_TABLE_BOUND_MASK = (FL_USER8|FL_USER9|FL_USER10|FL_USER11),
+    RHASH_AR_TABLE_BOUND_SHIFT = (FL_USHIFT+8),
 
     RHASH_ENUM_END
 };
 
 #define HASH_PROC_DEFAULT FL_USER2
 
-#define RHASH_ARRAY_SIZE_RAW(h) \
-  ((unsigned int)((RBASIC(h)->flags & RHASH_ARRAY_SIZE_MASK) >> RHASH_ARRAY_SIZE_SHIFT))
+#define RHASH_AR_TABLE_SIZE_RAW(h) \
+  ((unsigned int)((RBASIC(h)->flags & RHASH_AR_TABLE_SIZE_MASK) >> RHASH_AR_TABLE_SIZE_SHIFT))
 
-int rb_hash_array_p(VALUE hash);
-struct li_table *rb_hash_array(VALUE hash);
+int rb_hash_ar_table_p(VALUE hash);
+struct ar_table_struct *rb_hash_ar_table(VALUE hash);
 st_table *rb_hash_st_table(VALUE hash);
 void rb_hash_st_table_set(VALUE hash, st_table *st);
 
 #if 0 /* for debug */
-#define RHASH_ARRAY_P(hash)       rb_hash_array_p(hash)
-#define RHASH_ARRAY(h)            rb_hash_array(h)
-#define RHASH_ST_TABLE(h)         rb_hash_st_table(h)
+#define RHASH_AR_TABLE_P(hash)       rb_hash_ar_table_p(hash)
+#define RHASH_AR_TABLE(h)            rb_hash_ar_table(h)
+#define RHASH_ST_TABLE(h)            rb_hash_st_table(h)
 #else
-#define RHASH_ARRAY_P(hash)       (!FL_TEST_RAW((hash), RHASH_ST_TABLE_FLAG))
-#define RHASH_ARRAY(hash)         (RHASH(hash)->as.li)
-#define RHASH_ST_TABLE(hash)      (RHASH(hash)->as.st)
+#define RHASH_AR_TABLE_P(hash)       (!FL_TEST_RAW((hash), RHASH_ST_TABLE_FLAG))
+#define RHASH_AR_TABLE(hash)         (RHASH(hash)->as.ar)
+#define RHASH_ST_TABLE(hash)         (RHASH(hash)->as.st)
 #endif
 
-#define RHASH(obj)                (R_CAST(RHash)(obj))
-#define RHASH_ST_SIZE(h)          (RHASH_ST_TABLE(h)->num_entries)
-#define RHASH_TABLE_P(h)          (!RHASH_ARRAY_P(h))
-#define RHASH_CLEAR(h)            (FL_UNSET_RAW(h, RHASH_ST_TABLE_FLAG), RHASH(h)->as.li = NULL)
+#define RHASH(obj)                   (R_CAST(RHash)(obj))
+#define RHASH_ST_SIZE(h)             (RHASH_ST_TABLE(h)->num_entries)
+#define RHASH_ST_TABLE_P(h)          (!RHASH_AR_TABLE_P(h))
+#define RHASH_ST_CLEAR(h)            (FL_UNSET_RAW(h, RHASH_ST_TABLE_FLAG), RHASH(h)->as.ar = NULL)
 
-#define RHASH_ARRAY_SIZE_MASK     (VALUE)RHASH_ARRAY_SIZE_MASK
-#define RHASH_ARRAY_SIZE_SHIFT    RHASH_ARRAY_SIZE_SHIFT
-#define RHASH_ARRAY_BOUND_MASK    (VALUE)RHASH_ARRAY_BOUND_MASK
-#define RHASH_ARRAY_BOUND_SHIFT   RHASH_ARRAY_BOUND_SHIFT
+#define RHASH_AR_TABLE_SIZE_MASK     (VALUE)RHASH_AR_TABLE_SIZE_MASK
+#define RHASH_AR_TABLE_SIZE_SHIFT    RHASH_AR_TABLE_SIZE_SHIFT
+#define RHASH_AR_TABLE_BOUND_MASK    (VALUE)RHASH_AR_TABLE_BOUND_MASK
+#define RHASH_AR_TABLE_BOUND_SHIFT   RHASH_AR_TABLE_BOUND_SHIFT
 
 #if USE_TRANSIENT_HEAP
 #define RHASH_TRANSIENT_FLAG      FL_USER14
@@ -810,33 +810,33 @@ void rb_hash_st_table_set(VALUE hash, st_table *st);
 #define RHASH_UNSET_TRANSIENT_FLAG(h) ((void)0)
 #endif
 
-#define RHASH_ARRAY_MAX_SIZE      8
-#define RHASH_ARRAY_MAX_BOUND     RHASH_ARRAY_MAX_SIZE
+#define RHASH_AR_TABLE_MAX_SIZE      8
+#define RHASH_AR_TABLE_MAX_BOUND     RHASH_AR_TABLE_MAX_SIZE
 
-typedef struct li_table_entry {
+typedef struct ar_table_entry {
     VALUE hash;
     VALUE key;
     VALUE record;
-} li_table_entry;
+} ar_table_entry;
 
-typedef struct li_table {
-    li_table_entry entries[RHASH_ARRAY_MAX_SIZE];
-} li_table;
+typedef struct ar_table_struct {
+    ar_table_entry entries[RHASH_AR_TABLE_MAX_SIZE];
+} ar_table;
 
 /*
- * RHASH_ARRAY_P(h):
- * * as.li == NULL or
- *   as.li points li_table.
- * * as.li is allocated by transient heap or xmalloc.
+ * RHASH_AR_TABLE_P(h):
+ * * as.ar == NULL or
+ *   as.ar points ar_table.
+ * * as.ar is allocated by transient heap or xmalloc.
  *
- * !RHASH_ARRAY_P(h):
+ * !RHASH_AR_TABLE_P(h):
  * * as.st points st_table.
  */
 struct RHash {
     struct RBasic basic;
     union {
-        struct st_table *st;
-        struct li_table *li; /* possibly 0 */
+        st_table *st;
+        ar_table *ar; /* possibly 0 */
     } as;
     int iter_lev;
     VALUE ifnone;
@@ -849,7 +849,7 @@ struct RHash {
 
 #  define RHASH_ITER_LEV(h)  (RHASH(h)->iter_lev)
 #  define RHASH_IFNONE(h)    (RHASH(h)->ifnone)
-#  define RHASH_SIZE(h)      (RHASH_ARRAY_P(h) ? RHASH_ARRAY_SIZE_RAW(h) : RHASH_ST_SIZE(h))
+#  define RHASH_SIZE(h)      (RHASH_AR_TABLE_P(h) ? RHASH_AR_TABLE_SIZE_RAW(h) : RHASH_ST_SIZE(h))
 #endif /* #ifdef RHASH_ITER_LEV */
 
 /* missing/setproctitle.c */
@@ -1262,14 +1262,13 @@ VALUE rb_gvar_defined(struct rb_global_entry *);
 #ifdef ARRAY_DEBUG
 #define RARRAY_PTR_IN_USE_FLAG FL_USER14
 #define ARY_PTR_USING_P(ary) FL_TEST_RAW((ary), RARRAY_PTR_IN_USE_FLAG)
-
 #else
 
 /* disable debug function */
-#undef  RARRAY_PTR_USE_START
-#undef  RARRAY_PTR_USE_END
-#define RARRAY_PTR_USE_START(a) ((VALUE *)RARRAY_CONST_PTR_TRANSIENT(a))
-#define RARRAY_PTR_USE_END(a)
+#undef  RARRAY_PTR_USE_START_TRANSIENT
+#undef  RARRAY_PTR_USE_END_TRANSIENT
+#define RARRAY_PTR_USE_START_TRANSIENT(a) ((VALUE *)RARRAY_CONST_PTR_TRANSIENT(a))
+#define RARRAY_PTR_USE_END_TRANSIENT(a)
 #define ARY_PTR_USING_P(ary) 0
 
 #endif
@@ -1381,12 +1380,7 @@ VALUE rb_insns_name_array(void);
 int rb_vm_insn_addr2insn(const void *);
 
 /* complex.c */
-VALUE rb_complex_plus(VALUE, VALUE);
-VALUE rb_complex_mul(VALUE, VALUE);
-VALUE rb_complex_abs(VALUE x);
-VALUE rb_complex_sqrt(VALUE x);
-VALUE rb_dbl_complex_polar_pi(double abs, double ang);
-VALUE rb_complex_pow(VALUE self, VALUE other);
+VALUE rb_dbl_complex_new_polar_pi(double abs, double ang);
 
 struct rb_thread_struct;
 /* cont.c */
@@ -1420,6 +1414,7 @@ void rb_encdb_set_unicode(int index);
 PUREFUNC(int rb_data_is_encoding(VALUE obj));
 
 /* enum.c */
+extern VALUE rb_cArithSeq;
 VALUE rb_f_send(int argc, VALUE *argv, VALUE recv);
 VALUE rb_nmin_run(VALUE obj, VALUE num, int by, int rev, int ary);
 
@@ -1579,6 +1574,7 @@ VALUE rb_hash_key_str(VALUE);
 VALUE rb_hash_keys(VALUE hash);
 VALUE rb_hash_values(VALUE hash);
 VALUE rb_hash_rehash(VALUE hash);
+VALUE rb_hash_resurrect(VALUE hash);
 int rb_hash_add_new_element(VALUE hash, VALUE key, VALUE val);
 VALUE rb_hash_set_pair(VALUE hash, VALUE pair);
 void rb_hash_bulk_insert(long, const VALUE *, VALUE);
@@ -1965,6 +1961,11 @@ ARGVSTR2ARGC(VALUE argv_str)
 rb_pid_t rb_fork_ruby(int *status);
 void rb_last_status_clear(void);
 
+/* range.c */
+#define RANGE_BEG(r) (RSTRUCT(r)->as.ary[0])
+#define RANGE_END(r) (RSTRUCT(r)->as.ary[1])
+#define RANGE_EXCL(r) (RSTRUCT(r)->as.ary[2])
+
 /* rational.c */
 VALUE rb_rational_canonicalize(VALUE x);
 VALUE rb_rational_uminus(VALUE self);
@@ -2224,6 +2225,8 @@ VALUE rb_thread_io_blocking_region(rb_blocking_function_t *func, void *data1, in
 
 /* array.c (export) */
 void rb_ary_detransient(VALUE a);
+VALUE *rb_ary_ptr_use_start(VALUE ary);
+void rb_ary_ptr_use_end(VALUE ary);
 
 /* bignum.c (export) */
 VALUE rb_big_mul_normal(VALUE x, VALUE y);
@@ -2298,7 +2301,6 @@ int rb_exec_async_signal_safe(const struct rb_execarg *e, char *errmsg, size_t e
 rb_pid_t rb_fork_async_signal_safe(int *status, int (*chfunc)(void*, char *, size_t), void *charg, VALUE fds, char *errmsg, size_t errmsg_buflen);
 VALUE rb_execarg_new(int argc, const VALUE *argv, int accept_shell, int allow_exc_opt);
 struct rb_execarg *rb_execarg_get(VALUE execarg_obj); /* dangerous.  needs GC guard. */
-VALUE rb_execarg_init(int argc, const VALUE *argv, int accept_shell, VALUE execarg_obj, int allow_exc_opt);
 int rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val);
 void rb_execarg_parent_start(VALUE execarg_obj);
 void rb_execarg_parent_end(VALUE execarg_obj);

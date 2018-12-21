@@ -51,7 +51,6 @@ gems:
     author: Jim Weirich
     email: jim@weirichhouse.org
     homepage: http://rake.rubyforge.org
-    rubyforge_project: rake
     description: Rake is a Make-like program implemented in Ruby. Tasks and dependencies are specified in standard Ruby syntax.
     autorequire:
     default_executable: rake
@@ -517,6 +516,24 @@ PeIQQkFng2VVot/WAQbv3ePqWq07g1BBcwIBAg==
     assert_equal url, e.uri
   end
 
+  def test_fetch_path_openssl_ssl_sslerror
+    fetcher = Gem::RemoteFetcher.new nil
+    @fetcher = fetcher
+
+    def fetcher.fetch_http(uri, mtime = nil, head = nil)
+      raise OpenSSL::SSL::SSLError
+    end
+
+    url = 'http://example.com/uri'
+
+    e = assert_raises Gem::RemoteFetcher::FetchError do
+      fetcher.fetch_path url
+    end
+
+    assert_equal "OpenSSL::SSL::SSLError: OpenSSL::SSL::SSLError (#{url})", e.message
+    assert_equal url, e.uri
+  end
+
   def test_fetch_path_unmodified
     fetcher = Gem::RemoteFetcher.new nil
     @fetcher = fetcher
@@ -818,10 +835,26 @@ PeIQQkFng2VVot/WAQbv3ePqWq07g1BBcwIBAg==
 
   def test_do_not_follow_insecure_redirect
     ssl_server = self.class.start_ssl_server
-    temp_ca_cert = File.join(DIR, 'ca_cert.pem'),
+    temp_ca_cert = File.join(DIR, 'ca_cert.pem')
+    expected_error_message =
+      "redirecting to non-https resource: #{@server_uri} (https://localhost:#{ssl_server.config[:Port]}/insecure_redirect?to=#{@server_uri})"
+
+    with_configured_fetcher(":ssl_ca_cert: #{temp_ca_cert}") do |fetcher|
+      err = assert_raises Gem::RemoteFetcher::FetchError do
+        fetcher.fetch_path("https://localhost:#{ssl_server.config[:Port]}/insecure_redirect?to=#{@server_uri}")
+      end
+
+      assert_equal(err.message, expected_error_message)
+    end
+  end
+
+  def test_nil_ca_cert
+    ssl_server = self.class.start_ssl_server
+    temp_ca_cert = nil
+
     with_configured_fetcher(":ssl_ca_cert: #{temp_ca_cert}") do |fetcher|
       assert_raises Gem::RemoteFetcher::FetchError do
-        fetcher.fetch_path("https://localhost:#{ssl_server.config[:Port]}/insecure_redirect?to=#{@server_uri}")
+        fetcher.fetch_path("https://localhost:#{ssl_server.config[:Port]}")
       end
     end
   end

@@ -279,7 +279,11 @@ env:
     <<: *osx
     env:
       - CONFIG_FLAG=--with-opt-dir=/usr/local/opt/openssl@1.1:/usr/local/opt/zlib
-      - TEST_ALL_OPTS="$JOBS -q --tty=no --excludes=\$(TESTSDIR)/excludes/_travis/osx"
+      # Not using $JOBS which might be harmful for some tests because osx build often hangs for unknown reasons.
+      # Using -v because we're too lazy to build hard timeout for each test and thus can't easily detect which test is hanging forever without -v.
+      - TEST_ALL_OPTS="-v --tty=no --excludes=\$(TESTSDIR)/excludes/_travis/osx"
+      # Also globally disabling $JOBS because even just building ruby could hang forever on osx.
+      - JOBS=
 
   - &universal-darwin17
     name: uinversal.x86_64h-darwin17
@@ -355,7 +359,7 @@ before_script:
   - cp -pr config.cache config.status .ext/include ../config_2nd
   - (cd .. && exec diff -ru config_1st config_2nd)
   - chmod u+w ..
-  - rm -r ~/config_2nd
+  - rm -rf ~/config_2nd
   - mv ../config_2nd ~
   - chmod u-w ..
   - $SETARCH make -s $JOBS && make install

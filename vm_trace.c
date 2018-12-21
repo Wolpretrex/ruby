@@ -629,6 +629,7 @@ get_event_id(rb_event_flag_t event)
 	C(thread_begin, THREAD_BEGIN);
 	C(thread_end, THREAD_END);
 	C(fiber_switch, FIBER_SWITCH);
+        C(script_compiled, SCRIPT_COMPILED);
 #undef C
       default:
 	return 0;
@@ -763,6 +764,9 @@ symbol2event_flag(VALUE v)
     C(thread_begin, THREAD_BEGIN);
     C(thread_end, THREAD_END);
     C(fiber_switch, FIBER_SWITCH);
+    C(script_compiled, SCRIPT_COMPILED);
+
+    /* joke */
     C(a_call, A_CALL);
     C(a_return, A_RETURN);
 #undef C
@@ -880,6 +884,7 @@ rb_tracearg_parameters(rb_trace_arg_t *trace_arg)
       case RUBY_EVENT_LINE:
       case RUBY_EVENT_CLASS:
       case RUBY_EVENT_END:
+      case RUBY_EVENT_SCRIPT_COMPILED:
 	rb_raise(rb_eRuntimeError, "not supported by this event");
 	break;
     }
@@ -955,6 +960,57 @@ rb_tracearg_raised_exception(rb_trace_arg_t *trace_arg)
         rb_bug("rb_tracearg_raised_exception: unreachable");
     }
     return trace_arg->data;
+}
+
+VALUE
+rb_tracearg_eval_script(rb_trace_arg_t *trace_arg)
+{
+    VALUE data = trace_arg->data;
+
+    if (trace_arg->event & (RUBY_EVENT_SCRIPT_COMPILED)) {
+        /* ok */
+    }
+    else {
+        rb_raise(rb_eRuntimeError, "not supported by this event");
+    }
+    if (data == Qundef) {
+        rb_bug("rb_tracearg_raised_exception: unreachable");
+    }
+    if (rb_obj_is_iseq(data)) {
+        return Qnil;
+    }
+    else {
+        VM_ASSERT(RB_TYPE_P(data, T_ARRAY));
+        /* [src, iseq] */
+        return RARRAY_AREF(data, 0);
+    }
+}
+
+VALUE
+rb_tracearg_instruction_sequence(rb_trace_arg_t *trace_arg)
+{
+    VALUE data = trace_arg->data;
+
+    if (trace_arg->event & (RUBY_EVENT_SCRIPT_COMPILED)) {
+        /* ok */
+    }
+    else {
+        rb_raise(rb_eRuntimeError, "not supported by this event");
+    }
+    if (data == Qundef) {
+        rb_bug("rb_tracearg_raised_exception: unreachable");
+    }
+
+    if (rb_obj_is_iseq(data)) {
+        return rb_iseqw_new((const rb_iseq_t *)data);
+    }
+    else {
+        VM_ASSERT(RB_TYPE_P(data, T_ARRAY));
+        VM_ASSERT(rb_obj_is_iseq(RARRAY_AREF(data, 1)));
+
+        /* [src, iseq] */
+        return rb_iseqw_new((const rb_iseq_t *)RARRAY_AREF(data, 1));
+    }
 }
 
 VALUE
@@ -1105,6 +1161,28 @@ static VALUE
 tracepoint_attr_raised_exception(VALUE tpval)
 {
     return rb_tracearg_raised_exception(get_trace_arg());
+}
+
+/*
+ * Compiled source code (String) on *eval methods on the +:script_compiled+ event.
+ * If loaded from a file, it will return nil.
+ */
+static VALUE
+tracepoint_attr_eval_script(VALUE tpval)
+{
+    return rb_tracearg_eval_script(get_trace_arg());
+}
+
+/*
+ * Compiled instruction sequence represented by a RubyVM::InstructionSequence instance
+ * on the +:script_compiled+ event.
+ *
+ * Note that this method is MRI specific.
+ */
+static VALUE
+tracepoint_attr_instruction_sequence(VALUE tpval)
+{
+    return rb_tracearg_instruction_sequence(get_trace_arg());
 }
 
 static void
@@ -1740,6 +1818,8 @@ Init_vm_trace(void)
     rb_define_method(rb_cTracePoint, "self", tracepoint_attr_self, 0);
     rb_define_method(rb_cTracePoint, "return_value", tracepoint_attr_return_value, 0);
     rb_define_method(rb_cTracePoint, "raised_exception", tracepoint_attr_raised_exception, 0);
+    rb_define_method(rb_cTracePoint, "eval_script", tracepoint_attr_eval_script, 0);
+    rb_define_method(rb_cTracePoint, "instruction_sequence", tracepoint_attr_instruction_sequence, 0);
 
     rb_define_singleton_method(rb_cTracePoint, "stat", tracepoint_stat_s, 0);
 }
@@ -1752,12 +1832,18 @@ typedef struct rb_postponed_job_struct {
 #define MAX_POSTPONED_JOB                  1000
 #define MAX_POSTPONED_JOB_SPECIAL_ADDITION   24
 
+struct rb_workqueue_job {
+    struct list_node jnode; /* <=> vm->workqueue */
+    rb_postponed_job_t job;
+};
+
 void
 Init_vm_postponed_job(void)
 {
     rb_vm_t *vm = GET_VM();
     vm->postponed_job_buffer = ALLOC_N(rb_postponed_job_t, MAX_POSTPONED_JOB);
     vm->postponed_job_index = 0;
+    /* workqueue is initialized when VM locks are initialized */
 }
 
 enum postponed_job_register_result {
@@ -1766,7 +1852,7 @@ enum postponed_job_register_result {
     PJRR_INTERRUPTED = 2
 };
 
-/* Async-signal-safe, thread-safe against MJIT worker thread */
+/* Async-signal-safe */
 static enum postponed_job_register_result
 postponed_job_register(rb_execution_context_t *ec, rb_vm_t *vm,
                        unsigned int flags, rb_postponed_job_func_t func, void *data, int max, int expected_index)
@@ -1774,13 +1860,11 @@ postponed_job_register(rb_execution_context_t *ec, rb_vm_t *vm,
     rb_postponed_job_t *pjob;
 
     if (expected_index >= max) return PJRR_FULL; /* failed */
-    if (mjit_enabled) mjit_postponed_job_register_start_hook();
 
     if (ATOMIC_CAS(vm->postponed_job_index, expected_index, expected_index+1) == expected_index) {
         pjob = &vm->postponed_job_buffer[expected_index];
     }
     else {
-        if (mjit_enabled) mjit_postponed_job_register_finish_hook();
         return PJRR_INTERRUPTED;
     }
 
@@ -1789,7 +1873,6 @@ postponed_job_register(rb_execution_context_t *ec, rb_vm_t *vm,
     pjob->data = data;
 
     RUBY_VM_SET_POSTPONED_JOB_INTERRUPT(ec);
-    if (mjit_enabled) mjit_postponed_job_register_finish_hook();
 
     return PJRR_SUCCESS;
 }
@@ -1842,6 +1925,29 @@ rb_postponed_job_register_one(unsigned int flags, rb_postponed_job_func_t func, 
     }
 }
 
+/*
+ * thread-safe and called from non-Ruby thread
+ * returns FALSE on failure (ENOMEM), TRUE otherwise
+ */
+int
+rb_workqueue_register(unsigned flags, rb_postponed_job_func_t func, void *data)
+{
+    struct rb_workqueue_job *wq_job = malloc(sizeof(*wq_job));
+    rb_vm_t *vm = GET_VM();
+
+    if (!wq_job) return FALSE;
+    wq_job->job.func = func;
+    wq_job->job.data = data;
+
+    rb_nativethread_lock_lock(&vm->workqueue_lock);
+    list_add_tail(&vm->workqueue, &wq_job->jnode);
+    rb_nativethread_lock_unlock(&vm->workqueue_lock);
+
+    RUBY_VM_SET_POSTPONED_JOB_INTERRUPT(GET_EC());
+
+    return TRUE;
+}
+
 void
 rb_postponed_job_flush(rb_vm_t *vm)
 {
@@ -1849,6 +1955,13 @@ rb_postponed_job_flush(rb_vm_t *vm)
     const rb_atomic_t block_mask = POSTPONED_JOB_INTERRUPT_MASK|TRAP_INTERRUPT_MASK;
     volatile rb_atomic_t saved_mask = ec->interrupt_mask & block_mask;
     VALUE volatile saved_errno = ec->errinfo;
+    struct list_head tmp;
+
+    list_head_init(&tmp);
+
+    rb_nativethread_lock_lock(&vm->workqueue_lock);
+    list_append_list(&tmp, &vm->workqueue);
+    rb_nativethread_lock_unlock(&vm->workqueue_lock);
 
     ec->errinfo = Qnil;
     /* mask POSTPONED_JOB dispatch */
@@ -1857,16 +1970,33 @@ rb_postponed_job_flush(rb_vm_t *vm)
 	EC_PUSH_TAG(ec);
 	if (EC_EXEC_TAG() == TAG_NONE) {
             int index;
+            struct rb_workqueue_job *wq_job;
+
             while ((index = vm->postponed_job_index) > 0) {
                 if (ATOMIC_CAS(vm->postponed_job_index, index, index-1) == index) {
                     rb_postponed_job_t *pjob = &vm->postponed_job_buffer[index-1];
                     (*pjob->func)(pjob->data);
                 }
 	    }
+            while ((wq_job = list_pop(&tmp, struct rb_workqueue_job, jnode))) {
+                rb_postponed_job_t pjob = wq_job->job;
+
+                free(wq_job);
+                (pjob.func)(pjob.data);
+            }
 	}
 	EC_POP_TAG();
     }
     /* restore POSTPONED_JOB mask */
     ec->interrupt_mask &= ~(saved_mask ^ block_mask);
     ec->errinfo = saved_errno;
+
+    /* don't leak memory if a job threw an exception */
+    if (!list_empty(&tmp)) {
+        rb_nativethread_lock_lock(&vm->workqueue_lock);
+        list_prepend_list(&vm->workqueue, &tmp);
+        rb_nativethread_lock_unlock(&vm->workqueue_lock);
+
+        RUBY_VM_SET_POSTPONED_JOB_INTERRUPT(GET_EC());
+    }
 }

@@ -2325,13 +2325,16 @@ time_init_1(int argc, VALUE *argv, VALUE time)
  *  *Note:* The new object will use the resolution available on your
  *  system clock, and may include fractional seconds.
  *
- *  If one or more arguments specified, the time is initialized to the specified
- *  time.
+ *  If one or more arguments are specified, the time is initialized to the
+ *  specified time.
  *
  *  +sec+ may have fraction if it is a rational.
  *
- *  +tz+ is the offset from UTC, or a timezone object.
- *  It can be a string such as "+09:00" or a number of seconds such as 32400.
+ *  +tz+ specifies the timezone.
+ *  It can be an offset from UTC, given either as a string such as "+09:00"
+ *  or as a number of seconds such as 32400.
+ *  Or it can be a timezone object,
+ *  see {Timezone argument}[#class-Time-label-Timezone+argument] for details.
  *
  *     a = Time.new      #=> 2007-11-19 07:50:02 -0600
  *     b = Time.new      #=> 2007-11-19 07:50:02 -0600
@@ -2350,14 +2353,11 @@ time_init_1(int argc, VALUE *argv, VALUE time)
  *     t6 = Time.new(2007,11,5,11,21,0, "-05:00") # EST (Detroit)
  *     t7 = Time.new(2007,11,5,13,45,0, "-05:00") # EST (Detroit)
  *     t8 = Time.new(2007,11,6,17,10,0, "+09:00") # JST (Narita)
- *     p((t2-t1)/3600.0)                          #=> 10.666666666666666
- *     p((t4-t3)/3600.0)                          #=> 2.466666666666667
- *     p((t6-t5)/3600.0)                          #=> 1.95
- *     p((t8-t7)/3600.0)                          #=> 13.416666666666666
+ *     (t2-t1)/3600.0                             #=> 10.666666666666666
+ *     (t4-t3)/3600.0                             #=> 2.466666666666667
+ *     (t6-t5)/3600.0                             #=> 1.95
+ *     (t8-t7)/3600.0                             #=> 13.416666666666666
  *
- *  Or it can be a timezone object.
- *  See {Timezone argument}[#class-Time-label-Timezone+argument] for
- *  details.
  */
 
 static VALUE
@@ -2518,22 +2518,29 @@ time_timespec(VALUE num, int interval)
     VALUE i, f, ary;
 
 #ifndef NEGATIVE_TIME_T
-    interval = 1;
+# define arg_range_check(v) \
+    (((v) < 0) ? \
+     rb_raise(rb_eArgError, "%s must not be negative", tstr) : \
+     (void)0)
+#else
+# define arg_range_check(v) \
+    ((interval && (v) < 0) ? \
+     rb_raise(rb_eArgError, "time interval must not be negative") : \
+     (void)0)
 #endif
 
     if (FIXNUM_P(num)) {
 	t.tv_sec = NUM2TIMET(num);
-	if (interval && t.tv_sec < 0)
-	    rb_raise(rb_eArgError, "%s must be positive", tstr);
+        arg_range_check(t.tv_sec);
 	t.tv_nsec = 0;
     }
     else if (RB_FLOAT_TYPE_P(num)) {
-	if (interval && RFLOAT_VALUE(num) < 0.0)
-	    rb_raise(rb_eArgError, "%s must be positive", tstr);
-	else {
+        double x = RFLOAT_VALUE(num);
+        arg_range_check(x);
+        {
 	    double f, d;
 
-	    d = modf(RFLOAT_VALUE(num), &f);
+            d = modf(x, &f);
 	    if (d >= 0) {
 		t.tv_nsec = (int)(d*1e9+0.5);
 		if (t.tv_nsec >= 1000000000) {
@@ -2547,14 +2554,13 @@ time_timespec(VALUE num, int interval)
 	    }
 	    t.tv_sec = (time_t)f;
 	    if (f != t.tv_sec) {
-		rb_raise(rb_eRangeError, "%f out of Time range", RFLOAT_VALUE(num));
+                rb_raise(rb_eRangeError, "%f out of Time range", x);
 	    }
 	}
     }
     else if (RB_TYPE_P(num, T_BIGNUM)) {
 	t.tv_sec = NUM2TIMET(num);
-	if (interval && t.tv_sec < 0)
-	    rb_raise(rb_eArgError, "%s must be positive", tstr);
+        arg_range_check(t.tv_sec);
 	t.tv_nsec = 0;
     }
     else {
@@ -2564,8 +2570,7 @@ time_timespec(VALUE num, int interval)
             i = rb_ary_entry(ary, 0);
             f = rb_ary_entry(ary, 1);
             t.tv_sec = NUM2TIMET(i);
-            if (interval && t.tv_sec < 0)
-                rb_raise(rb_eArgError, "%s must be positive", tstr);
+            arg_range_check(t.tv_sec);
             f = rb_funcall(f, '*', 1, INT2FIX(1000000000));
             t.tv_nsec = NUM2LONG(f);
         }
@@ -2575,6 +2580,7 @@ time_timespec(VALUE num, int interval)
         }
     }
     return t;
+#undef arg_range_check
 }
 
 static struct timeval
@@ -2695,7 +2701,7 @@ get_scale(VALUE unit)
  *     Time.at(-284061600)                       #=> 1960-12-31 00:00:00 -0600
  *     Time.at(946684800.2).usec                 #=> 200000
  *     Time.at(946684800, 123456.789).nsec       #=> 123456789
- *     Time.at(946684800, 123456789, :nsec).nsec  #=> 123456789
+ *     Time.at(946684800, 123456789, :nsec).nsec #=> 123456789
  */
 
 static VALUE
@@ -3436,7 +3442,7 @@ time_to_i(VALUE time)
  *     t.to_i              #=> 1270968744
  *
  *  Note that IEEE 754 double is not accurate enough to represent
- *  the number of nanoseconds since the Epoch.
+ *  the exact number of nanoseconds since the Epoch.
  */
 
 static VALUE
@@ -3456,7 +3462,7 @@ time_to_f(VALUE time)
  *  since the Epoch.
  *
  *     t = Time.now
- *     p t.to_r            #=> (1270968792716287611/1000000000)
+ *     t.to_r            #=> (1270968792716287611/1000000000)
  *
  *  This methods is intended to be used to get an accurate value
  *  representing the nanoseconds since the Epoch. You can use this method
@@ -3559,7 +3565,7 @@ time_subsec(VALUE time)
 
 /*
  *  call-seq:
- *     time <=> other_time -> -1, 0, +1 or nil
+ *     time <=> other_time -> -1, 0, +1, or nil
  *
  *  Comparison---Compares +time+ with +other_time+.
  *
@@ -3756,7 +3762,7 @@ time_zonelocal(VALUE time, VALUE off)
  *     t.localtime("+09:00")                   #=> 2000-01-02 05:15:01 +0900
  *     t.utc?                                  #=> false
  *
- *  If +utc_offset+ is not given and _time_ is local time, just return
+ *  If +utc_offset+ is not given and _time_ is local time, just returns
  *  the receiver.
  */
 
@@ -3764,9 +3770,8 @@ static VALUE
 time_localtime_m(int argc, VALUE *argv, VALUE time)
 {
     VALUE off;
-    rb_scan_args(argc, argv, "01", &off);
 
-    if (!NIL_P(off)) {
+    if (rb_check_arity(argc, 0, 1) && !NIL_P(off = argv[0])) {
         return time_zonelocal(time, off);
     }
 
@@ -3881,9 +3886,8 @@ static VALUE
 time_getlocaltime(int argc, VALUE *argv, VALUE time)
 {
     VALUE off;
-    rb_scan_args(argc, argv, "01", &off);
 
-    if (!NIL_P(off)) {
+    if (rb_check_arity(argc, 0, 1) && !NIL_P(off = argv[0])) {
         VALUE zone = off;
         if (maybe_tzobj_p(zone)) {
             VALUE t = time_dup(time);
@@ -3963,11 +3967,11 @@ time_asctime(VALUE time)
  *  #strftime with the appropriate format string.
  *
  *     t = Time.now
- *     t.to_s                              => "2012-11-10 18:16:12 +0100"
- *     t.strftime "%Y-%m-%d %H:%M:%S %z"   => "2012-11-10 18:16:12 +0100"
+ *     t.to_s                              #=> "2012-11-10 18:16:12 +0100"
+ *     t.strftime "%Y-%m-%d %H:%M:%S %z"   #=> "2012-11-10 18:16:12 +0100"
  *
- *     t.utc.to_s                          => "2012-11-10 17:16:12 UTC"
- *     t.strftime "%Y-%m-%d %H:%M:%S UTC"  => "2012-11-10 17:16:12 UTC"
+ *     t.utc.to_s                          #=> "2012-11-10 17:16:12 UTC"
+ *     t.strftime "%Y-%m-%d %H:%M:%S UTC"  #=> "2012-11-10 17:16:12 UTC"
  */
 
 static VALUE
@@ -4098,35 +4102,35 @@ rb_time_succ(VALUE time)
  *
  * Rounds sub seconds to a given precision in decimal digits (0 digits by default).
  * It returns a new Time object.
- * +ndigits+ should be zero or positive integer.
+ * +ndigits+ should be zero or a positive integer.
  *
  *     require 'time'
  *
  *     t = Time.utc(2010,3,30, 5,43,"25.123456789".to_r)
- *     p t.iso8601(10)           #=> "2010-03-30T05:43:25.1234567890Z"
- *     p t.round.iso8601(10)     #=> "2010-03-30T05:43:25.0000000000Z"
- *     p t.round(0).iso8601(10)  #=> "2010-03-30T05:43:25.0000000000Z"
- *     p t.round(1).iso8601(10)  #=> "2010-03-30T05:43:25.1000000000Z"
- *     p t.round(2).iso8601(10)  #=> "2010-03-30T05:43:25.1200000000Z"
- *     p t.round(3).iso8601(10)  #=> "2010-03-30T05:43:25.1230000000Z"
- *     p t.round(4).iso8601(10)  #=> "2010-03-30T05:43:25.1235000000Z"
- *     p t.round(5).iso8601(10)  #=> "2010-03-30T05:43:25.1234600000Z"
- *     p t.round(6).iso8601(10)  #=> "2010-03-30T05:43:25.1234570000Z"
- *     p t.round(7).iso8601(10)  #=> "2010-03-30T05:43:25.1234568000Z"
- *     p t.round(8).iso8601(10)  #=> "2010-03-30T05:43:25.1234567900Z"
- *     p t.round(9).iso8601(10)  #=> "2010-03-30T05:43:25.1234567890Z"
- *     p t.round(10).iso8601(10) #=> "2010-03-30T05:43:25.1234567890Z"
+ *     t.iso8601(10)           #=> "2010-03-30T05:43:25.1234567890Z"
+ *     t.round.iso8601(10)     #=> "2010-03-30T05:43:25.0000000000Z"
+ *     t.round(0).iso8601(10)  #=> "2010-03-30T05:43:25.0000000000Z"
+ *     t.round(1).iso8601(10)  #=> "2010-03-30T05:43:25.1000000000Z"
+ *     t.round(2).iso8601(10)  #=> "2010-03-30T05:43:25.1200000000Z"
+ *     t.round(3).iso8601(10)  #=> "2010-03-30T05:43:25.1230000000Z"
+ *     t.round(4).iso8601(10)  #=> "2010-03-30T05:43:25.1235000000Z"
+ *     t.round(5).iso8601(10)  #=> "2010-03-30T05:43:25.1234600000Z"
+ *     t.round(6).iso8601(10)  #=> "2010-03-30T05:43:25.1234570000Z"
+ *     t.round(7).iso8601(10)  #=> "2010-03-30T05:43:25.1234568000Z"
+ *     t.round(8).iso8601(10)  #=> "2010-03-30T05:43:25.1234567900Z"
+ *     t.round(9).iso8601(10)  #=> "2010-03-30T05:43:25.1234567890Z"
+ *     t.round(10).iso8601(10) #=> "2010-03-30T05:43:25.1234567890Z"
  *
  *     t = Time.utc(1999,12,31, 23,59,59)
- *     p((t + 0.4).round.iso8601(3))    #=> "1999-12-31T23:59:59.000Z"
- *     p((t + 0.49).round.iso8601(3))   #=> "1999-12-31T23:59:59.000Z"
- *     p((t + 0.5).round.iso8601(3))    #=> "2000-01-01T00:00:00.000Z"
- *     p((t + 1.4).round.iso8601(3))    #=> "2000-01-01T00:00:00.000Z"
- *     p((t + 1.49).round.iso8601(3))   #=> "2000-01-01T00:00:00.000Z"
- *     p((t + 1.5).round.iso8601(3))    #=> "2000-01-01T00:00:01.000Z"
+ *     (t + 0.4).round.iso8601(3)    #=> "1999-12-31T23:59:59.000Z"
+ *     (t + 0.49).round.iso8601(3)   #=> "1999-12-31T23:59:59.000Z"
+ *     (t + 0.5).round.iso8601(3)    #=> "2000-01-01T00:00:00.000Z"
+ *     (t + 1.4).round.iso8601(3)    #=> "2000-01-01T00:00:00.000Z"
+ *     (t + 1.49).round.iso8601(3)   #=> "2000-01-01T00:00:00.000Z"
+ *     (t + 1.5).round.iso8601(3)    #=> "2000-01-01T00:00:01.000Z"
  *
  *     t = Time.utc(1999,12,31, 23,59,59)
- *     p (t + 0.123456789).round(4).iso8601(6)  #=> "1999-12-31T23:59:59.123500Z"
+ *     (t + 0.123456789).round(4).iso8601(6)  #=> "1999-12-31T23:59:59.123500Z"
  */
 
 static VALUE
@@ -4136,9 +4140,7 @@ time_round(int argc, VALUE *argv, VALUE time)
     long nd;
     struct time_object *tobj;
 
-    rb_scan_args(argc, argv, "01", &ndigits);
-
-    if (NIL_P(ndigits))
+    if (!rb_check_arity(argc, 0, 1) || NIL_P(ndigits = argv[0]))
         ndigits = INT2FIX(0);
     else
         ndigits = rb_to_int(ndigits);
@@ -4352,7 +4354,7 @@ time_sunday(VALUE time)
  *  Returns +true+ if _time_ represents Monday.
  *
  *     t = Time.local(2003, 8, 4)       #=> 2003-08-04 00:00:00 -0500
- *     p t.monday?                      #=> true
+ *     t.monday?                        #=> true
  */
 
 static VALUE
@@ -4368,7 +4370,7 @@ time_monday(VALUE time)
  *  Returns +true+ if _time_ represents Tuesday.
  *
  *     t = Time.local(1991, 2, 19)      #=> 1991-02-19 00:00:00 -0600
- *     p t.tuesday?                     #=> true
+ *     t.tuesday?                       #=> true
  */
 
 static VALUE
@@ -4384,7 +4386,7 @@ time_tuesday(VALUE time)
  *  Returns +true+ if _time_ represents Wednesday.
  *
  *     t = Time.local(1993, 2, 24)      #=> 1993-02-24 00:00:00 -0600
- *     p t.wednesday?                   #=> true
+ *     t.wednesday?                     #=> true
  */
 
 static VALUE
@@ -4400,7 +4402,7 @@ time_wednesday(VALUE time)
  *  Returns +true+ if _time_ represents Thursday.
  *
  *     t = Time.local(1995, 12, 21)     #=> 1995-12-21 00:00:00 -0600
- *     p t.thursday?                    #=> true
+ *     t.thursday?                      #=> true
  */
 
 static VALUE
@@ -4768,15 +4770,15 @@ strftime_cstr(const char *fmt, size_t len, VALUE time, rb_encoding *enc)
  *  America/Havana (-05:00), Asia/Harbin (+08:00), Australia/Darwin (+09:30)
  *  and Australia/Adelaide (+10:30).
  *  Also, %Z is highly dependent on the operating system.
- *  For example, it may generate a non ASCII string on Japanese Windows.
+ *  For example, it may generate a non ASCII string on Japanese Windows,
  *  i.e. the result can be different to "JST".
  *  So the numeric time zone offset, %z, is recommended.
  *
  *  Examples:
  *
  *    t = Time.new(2007,11,19,8,37,48,"-06:00") #=> 2007-11-19 08:37:48 -0600
- *    t.strftime("Printed on %m/%d/%Y")   #=> "Printed on 11/19/2007"
- *    t.strftime("at %I:%M%p")            #=> "at 08:37AM"
+ *    t.strftime("Printed on %m/%d/%Y")         #=> "Printed on 11/19/2007"
+ *    t.strftime("at %I:%M %p")                 #=> "at 08:37 AM"
  *
  *  Various ISO 8601 formats:
  *    %Y%m%d           => 20071119                  Calendar date (basic)
@@ -4959,7 +4961,7 @@ time_dump(int argc, VALUE *argv, VALUE time)
 {
     VALUE str;
 
-    rb_scan_args(argc, argv, "01", 0);
+    rb_check_arity(argc, 0, 1);
     str = time_mdump(time);
 
     return str;
@@ -5483,7 +5485,7 @@ rb_time_zone_abbreviation(VALUE zone, VALUE time)
  *
  *  The +name+ method is used for marshaling. If this method is not
  *  defined on a timezone object, Time objects using that timezone
- *  object are not able to dump by Marshal.
+ *  object can not be dumped by Marshal.
  *
  *  The +abbr+ method is used by '%Z' in #strftime.
  *

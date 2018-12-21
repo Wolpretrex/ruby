@@ -83,6 +83,8 @@ ISEQ_ORIGINAL_ISEQ_ALLOC(const rb_iseq_t *iseq, long size)
 #define ISEQ_TRANSLATED       IMEMO_FL_USER3
 #define ISEQ_MARKABLE_ISEQ    IMEMO_FL_USER4
 
+#define ISEQ_EXECUTABLE_P(iseq) (FL_TEST_RAW((iseq), ISEQ_NOT_LOADED_YET | ISEQ_USE_COMPILE_DATA) == 0)
+
 struct iseq_compile_data {
     /* GC is needed */
     const VALUE err_info;
@@ -126,8 +128,8 @@ ISEQ_COMPILE_DATA(const rb_iseq_t *iseq)
 static inline void
 ISEQ_COMPILE_DATA_ALLOC(rb_iseq_t *iseq)
 {
-    iseq->flags |= ISEQ_USE_COMPILE_DATA;
     iseq->aux.compile_data = ZALLOC(struct iseq_compile_data);
+    iseq->flags |= ISEQ_USE_COMPILE_DATA;
 }
 
 static inline void
@@ -150,6 +152,7 @@ VALUE rb_iseq_ibf_load_extra_data(VALUE str);
 void rb_iseq_init_trace(rb_iseq_t *iseq);
 int rb_iseq_add_local_tracepoint_recursively(const rb_iseq_t *iseq, rb_event_flag_t turnon_events, VALUE tpval, unsigned int target_line);
 int rb_iseq_remove_local_tracepoint_recursively(const rb_iseq_t *iseq, VALUE tpval);
+const rb_iseq_t *rb_iseq_load_iseq(VALUE fname);
 
 #if VM_INSN_INFO_TABLE_IMPL == 2
 unsigned int *rb_iseq_insns_info_decode_positions(const struct rb_iseq_constant_body *body);

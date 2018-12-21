@@ -605,8 +605,14 @@ rb_method_entry_make(VALUE klass, ID mid, VALUE defined_class, rb_method_visibil
     rb_clear_method_cache_by_class(klass);
 
     /* check mid */
-    if (klass == rb_cObject && mid == idInitialize) {
-	rb_warn("redefining Object#initialize may cause infinite loop");
+    if (klass == rb_cObject) {
+        switch (mid) {
+          case idInitialize:
+          case idRespond_to_missing:
+          case idMethodMissing:
+          case idRespond_to:
+            rb_warn("redefining Object#%s may cause infinite loop", rb_id2name(mid));
+        }
     }
     /* check mid */
     if (mid == object_id || mid == id__send__) {
@@ -916,49 +922,36 @@ rb_callable_method_entry_without_refinements(VALUE klass, ID id, VALUE *defined_
 }
 
 static const rb_method_entry_t *
-refined_method_original_method_entry(VALUE refinements, const rb_method_entry_t *me, VALUE *defined_class_ptr)
-{
-    VALUE super;
-
-    if (me->def->body.refined.orig_me) {
-	if (defined_class_ptr) *defined_class_ptr = me->def->body.refined.orig_me->defined_class;
-	return me->def->body.refined.orig_me;
-    }
-    else if (!(super = RCLASS_SUPER(me->owner))) {
-	return 0;
-    }
-    else {
-	rb_method_entry_t *tmp_me;
-	tmp_me = method_entry_get(super, me->called_id, defined_class_ptr);
-	return resolve_refined_method(refinements, tmp_me, defined_class_ptr);
-    }
-}
-
-static const rb_method_entry_t *
 resolve_refined_method(VALUE refinements, const rb_method_entry_t *me, VALUE *defined_class_ptr)
 {
-    if (me && me->def->type == VM_METHOD_TYPE_REFINED) {
+    while (me && me->def->type == VM_METHOD_TYPE_REFINED) {
 	VALUE refinement;
-	rb_method_entry_t *tmp_me;
+        const rb_method_entry_t *tmp_me;
+        VALUE super;
 
 	refinement = find_refinement(refinements, me->owner);
-	if (NIL_P(refinement)) {
-	    return refined_method_original_method_entry(refinements, me, defined_class_ptr);
-	}
-	else {
+        if (!NIL_P(refinement)) {
 	    tmp_me = method_entry_get(refinement, me->called_id, defined_class_ptr);
 
 	    if (tmp_me && tmp_me->def->type != VM_METHOD_TYPE_REFINED) {
 		return tmp_me;
 	    }
-	    else {
-		return refined_method_original_method_entry(refinements, me, defined_class_ptr);
-	    }
 	}
+
+        tmp_me = me->def->body.refined.orig_me;
+        if (tmp_me) {
+            if (defined_class_ptr) *defined_class_ptr = tmp_me->defined_class;
+            return tmp_me;
+        }
+
+        super = RCLASS_SUPER(me->owner);
+        if (!super) {
+            return 0;
+        }
+
+        me = method_entry_get(super, me->called_id, defined_class_ptr);
     }
-    else {
-	return me;
-    }
+    return me;
 }
 
 const rb_method_entry_t *
@@ -967,7 +960,7 @@ rb_resolve_refined_method(VALUE refinements, const rb_method_entry_t *me)
     return resolve_refined_method(refinements, me, NULL);
 }
 
-static const rb_callable_method_entry_t *
+const rb_callable_method_entry_t *
 rb_resolve_refined_method_callable(VALUE refinements, const rb_callable_method_entry_t *me)
 {
     VALUE defined_class = me->defined_class;

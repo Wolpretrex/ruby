@@ -215,6 +215,8 @@ static VALUE valid_class_serials;
 
 /* Used C compiler path.  */
 static const char *cc_path;
+/* Used C compiler flags. */
+static const char **cc_common_args;
 /* Name of the precompiled header file.  */
 static char *pch_file;
 /* The process id which should delete the pch_file on mjit_finish. */
@@ -238,20 +240,17 @@ static char *libruby_pathflag;
 #if defined(__GNUC__) && \
      (!defined(__clang__) || \
       (defined(__clang__) && (defined(__FreeBSD__) || defined(__GLIBC__))))
-#define GCC_PIC_FLAGS "-Wfatal-errors", "-fPIC", "-shared", "-w", \
-    "-pipe",
+# define GCC_PIC_FLAGS "-Wfatal-errors", "-fPIC", "-shared", "-w", "-pipe",
+# define MJIT_CFLAGS_PIPE 1
 #else
-#define GCC_PIC_FLAGS /* empty */
+# define GCC_PIC_FLAGS /* empty */
+# define MJIT_CFLAGS_PIPE 0
 #endif
 
 static const char *const CC_COMMON_ARGS[] = {
     MJIT_CC_COMMON MJIT_CFLAGS GCC_PIC_FLAGS
     NULL
 };
-
-/* GCC and CLANG executable paths.  TODO: The paths should absolute
-   ones to prevent changing C compiler for security reasons.  */
-#define CC_PATH CC_COMMON_ARGS[0]
 
 static const char *const CC_DEBUG_ARGS[] = {MJIT_DEBUGFLAGS NULL};
 static const char *const CC_OPTIMIZE_ARGS[] = {MJIT_OPTFLAGS NULL};
@@ -261,7 +260,7 @@ static const char *const CC_DLDFLAGS_ARGS[] = {
     MJIT_DLDFLAGS
 #if defined __GNUC__ && !defined __clang__
     "-nostartfiles",
-# if !defined(_WIN32) && !defined(__CYGWIN__)
+# if !defined(_WIN32) && !defined(__CYGWIN__) && !defined(_AIX)
     "-nodefaultlibs", "-nostdlib",
 # endif
 #endif
@@ -745,7 +744,7 @@ make_pch(void)
     rest_args[len - 2] = header_file;
     rest_args[len - 3] = pch_file;
     verbose(2, "Creating precompiled header");
-    args = form_args(3, CC_COMMON_ARGS, CC_CODEFLAG_ARGS, rest_args);
+    args = form_args(3, cc_common_args, CC_CODEFLAG_ARGS, rest_args);
     if (args == NULL) {
         mjit_warning("making precompiled header failed on forming args");
         CRITICAL_SECTION_START(3, "in make_pch");
@@ -789,7 +788,7 @@ compile_c_to_o(const char *c_file, const char *o_file)
 # ifdef __clang__
     files[4] = pch_file;
 # endif
-    args = form_args(5, CC_COMMON_ARGS, CC_CODEFLAG_ARGS, files, CC_LIBS, CC_DLDFLAGS_ARGS);
+    args = form_args(5, cc_common_args, CC_CODEFLAG_ARGS, files, CC_LIBS, CC_DLDFLAGS_ARGS);
     if (args == NULL)
         return FALSE;
 
@@ -1133,6 +1132,9 @@ static mjit_copy_job_t mjit_copy_job;
 
 static void mjit_copy_job_handler(void *data);
 
+/* vm_trace.c */
+int rb_workqueue_register(unsigned flags, rb_postponed_job_func_t , void *);
+
 /* We're lazily copying cache values from main thread because these cache values
    could be different between ones on enqueue timing and ones on dequeue timing.
    Return TRUE if copy succeeds. */
@@ -1148,7 +1150,7 @@ copy_cache_from_main_thread(mjit_copy_job_t *job)
         return job->finish_p;
     }
 
-    if (!rb_postponed_job_register(0, mjit_copy_job_handler, (void *)job))
+    if (!rb_workqueue_register(0, mjit_copy_job_handler, (void *)job))
         return FALSE;
     CRITICAL_SECTION_START(3, "in MJIT copy job wait");
     /* checking `stop_worker_p` too because `RUBY_VM_CHECK_INTS(ec)` may not

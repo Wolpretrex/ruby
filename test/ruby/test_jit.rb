@@ -239,8 +239,8 @@ class TestJIT < Test::Unit::TestCase
     assert_compile_once('a = 1; { a: a }', result_inspect: '{:a=>1}', insns: %i[newhash])
   end
 
-  def test_compile_insn_newhashfromarray
-    assert_compile_once('{ a: 1 }', result_inspect: '{:a=>1}', insns: %i[newhashfromarray])
+  def test_compile_insn_duphash
+    assert_compile_once('{ a: 1 }', result_inspect: '{:a=>1}', insns: %i[duphash])
   end
 
   def test_compile_insn_newrange
@@ -877,10 +877,8 @@ class TestJIT < Test::Unit::TestCase
         Process.waitpid(pid)
       end;
       success_count = err.scan(/^#{JIT_SUCCESS_PREFIX}:/).size
-      assert_equal(3, success_count)
-
-      lines = err.lines
       debug_info = "stdout:\n```\n#{out}\n```\n\nstderr:\n```\n#{err}```\n"
+      assert_equal(3, success_count, debug_info)
 
       # assert no remove error
       assert_equal("Successful MJIT finish\n" * 2, err.gsub(/^#{JIT_SUCCESS_PREFIX}:[^\n]+\n/, ''), debug_info)

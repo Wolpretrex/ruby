@@ -147,9 +147,8 @@ ruby_deprecated_internal_feature(const char *func)
  * call-seq:
  *    warn(msg)  -> nil
  *
- * Writes warning message +msg+ to $stderr, followed by a newline
- * if the message does not end in a newline.  This method is called
- * by Ruby for all emitted warnings.
+ * Writes warning message +msg+ to $stderr. This method is called by
+ * Ruby for all emitted warnings.
  */
 
 static VALUE
@@ -947,7 +946,7 @@ exc_initialize(int argc, VALUE *argv, VALUE exc)
 {
     VALUE arg;
 
-    rb_scan_args(argc, argv, "01", &arg);
+    arg = (!rb_check_arity(argc, 0, 1) ? Qnil : argv[0]);
     return exc_init(exc, arg);
 }
 
@@ -2083,8 +2082,8 @@ syserr_eqq(VALUE self, VALUE exc)
 /*
  *  Document-class: Interrupt
  *
- *  Raised with the interrupt signal is received, typically because the
- *  user pressed on Control-C (on most posix platforms). As such, it is a
+ *  Raised when the interrupt signal is received, typically because the
+ *  user has pressed Control-C (on most posix platforms). As such, it is a
  *  subclass of +SignalException+.
  *
  *     begin

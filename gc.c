@@ -2323,15 +2323,15 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
             RB_DEBUG_COUNTER_INC(obj_hash_empty);
         }
 
-        if (RHASH_ARRAY_P(obj)) {
-            RB_DEBUG_COUNTER_INC(obj_hash_array);
+        if (RHASH_AR_TABLE_P(obj)) {
+            RB_DEBUG_COUNTER_INC(obj_hash_ar);
         }
         else {
             RB_DEBUG_COUNTER_INC(obj_hash_st);
         }
 #endif
-        if (/* RHASH_ARRAY_P(obj) */ !FL_TEST_RAW(obj, RHASH_ST_TABLE_FLAG)) {
-            li_table *tab = RHASH(obj)->as.li;
+        if (/* RHASH_AR_TABLE_P(obj) */ !FL_TEST_RAW(obj, RHASH_ST_TABLE_FLAG)) {
+            ar_table *tab = RHASH(obj)->as.ar;
 
             if (tab) {
                 if (RHASH_TRANSIENT_P(obj)) {
@@ -2343,7 +2343,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
             }
         }
         else {
-            GC_ASSERT(RHASH_TABLE_P(obj));
+            GC_ASSERT(RHASH_ST_TABLE_P(obj));
             st_free_table(RHASH(obj)->as.st);
         }
 	break;
@@ -2776,12 +2776,7 @@ os_each_obj(int argc, VALUE *argv, VALUE os)
 {
     VALUE of;
 
-    if (argc == 0) {
-	of = 0;
-    }
-    else {
-	rb_scan_args(argc, argv, "01", &of);
-    }
+    of = (!rb_check_arity(argc, 0, 1) ? 0 : argv[0]);
     RETURN_ENUMERATOR(os, 1, &of);
     return os_obj_of(of);
 }
@@ -3459,8 +3454,8 @@ obj_memsize_of(VALUE obj, int use_all_types)
 	size += rb_ary_memsize(obj);
 	break;
       case T_HASH:
-        if (RHASH_ARRAY_P(obj)) {
-            size += sizeof(li_table);
+        if (RHASH_AR_TABLE_P(obj)) {
+            size += sizeof(ar_table);
 	}
         else {
             VM_ASSERT(RHASH_ST_TABLE(obj) != NULL);
@@ -3587,9 +3582,10 @@ count_objects(int argc, VALUE *argv, VALUE os)
     size_t freed = 0;
     size_t total = 0;
     size_t i;
-    VALUE hash;
+    VALUE hash = Qnil;
 
-    if (rb_scan_args(argc, argv, "01", &hash) == 1) {
+    if (rb_check_arity(argc, 0, 1) == 1) {
+        hash = argv[0];
         if (!RB_TYPE_P(hash, T_HASH))
             rb_raise(rb_eTypeError, "non-hash given");
     }
@@ -4412,9 +4408,9 @@ mark_hash(rb_objspace_t *objspace, VALUE hash)
 {
     rb_hash_stlike_foreach(hash, mark_keyvalue, (st_data_t)objspace);
 
-    if (RHASH_ARRAY_P(hash)) {
+    if (RHASH_AR_TABLE_P(hash)) {
         if (objspace->mark_func_data == NULL && RHASH_TRANSIENT_P(hash)) {
-            rb_transient_heap_mark(hash, RHASH_ARRAY(hash));
+            rb_transient_heap_mark(hash, RHASH_AR_TABLE(hash));
         }
     }
     else {
@@ -8086,13 +8082,13 @@ gc_latest_gc_info(int argc, VALUE *argv, VALUE self)
     rb_objspace_t *objspace = &rb_objspace;
     VALUE arg = Qnil;
 
-    if (rb_scan_args(argc, argv, "01", &arg) == 1) {
+    if (rb_check_arity(argc, 0, 1) == 1) {
+        arg = argv[0];
 	if (!SYMBOL_P(arg) && !RB_TYPE_P(arg, T_HASH)) {
 	    rb_raise(rb_eTypeError, "non-hash or symbol given");
 	}
     }
-
-    if (arg == Qnil) {
+    else {
 	arg = rb_hash_new();
     }
 
@@ -8464,7 +8460,8 @@ gc_stat(int argc, VALUE *argv, VALUE self)
 {
     VALUE arg = Qnil;
 
-    if (rb_scan_args(argc, argv, "01", &arg) == 1) {
+    if (rb_check_arity(argc, 0, 1) == 1) {
+        arg = argv[0];
 	if (SYMBOL_P(arg)) {
 	    size_t value = gc_stat_internal(arg);
 	    return SIZET2NUM(value);
@@ -8473,8 +8470,7 @@ gc_stat(int argc, VALUE *argv, VALUE self)
 	    rb_raise(rb_eTypeError, "non-hash or symbol given");
 	}
     }
-
-    if (arg == Qnil) {
+    else {
         arg = rb_hash_new();
     }
     gc_stat_internal(arg);
@@ -10467,12 +10463,7 @@ gc_profile_report(int argc, VALUE *argv, VALUE self)
 {
     VALUE out;
 
-    if (argc == 0) {
-	out = rb_stdout;
-    }
-    else {
-	rb_scan_args(argc, argv, "01", &out);
-    }
+    out = (!rb_check_arity(argc, 0, 1) ? rb_stdout : argv[0]);
     gc_profile_dump_on(out, rb_io_write);
 
     return Qnil;
@@ -10785,18 +10776,28 @@ rb_raw_obj_info(char *buff, const int buff_size, VALUE obj)
 	  }
           case T_HASH: {
               snprintf(buff, buff_size, "%s [%c%c] %d", buff,
-                       RHASH_ARRAY_P(obj) ? 'A' : 'S',
+                       RHASH_AR_TABLE_P(obj) ? 'A' : 'S',
                        RHASH_TRANSIENT_P(obj) ? 'T' : ' ',
                        (int)RHASH_SIZE(obj));
               break;
           }
-	  case T_CLASS: {
-	    VALUE class_path = rb_class_path_cached(obj);
-	    if (!NIL_P(class_path)) {
-		snprintf(buff, buff_size, "%s %s", buff, RSTRING_PTR(class_path));
-	    }
-	    break;
-	  }
+          case T_CLASS:
+          case T_MODULE:
+            {
+                VALUE class_path = rb_class_path_cached(obj);
+                if (!NIL_P(class_path)) {
+                    snprintf(buff, buff_size, "%s %s", buff, RSTRING_PTR(class_path));
+                }
+                break;
+            }
+          case T_ICLASS:
+            {
+                VALUE class_path = rb_class_path_cached(RBASIC_CLASS(obj));
+                if (!NIL_P(class_path)) {
+                    snprintf(buff, buff_size, "%s src:%s", buff, RSTRING_PTR(class_path));
+                }
+                break;
+            }
           case T_OBJECT:
             {
                 uint32_t len = ROBJECT_NUMIV(obj);

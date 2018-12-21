@@ -9,13 +9,13 @@
 $install_name ||= nil
 $so_name ||= nil
 $unicode_version ||= nil
+$unicode_emoji_version ||= nil
 arch = $arch or raise "missing -arch"
 version = $version or raise "missing -version"
 
 srcdir = File.expand_path('../..', __FILE__)
 $:.unshift(".")
 
-require "fileutils"
 mkconfig = File.basename($0)
 
 fast = {'prefix'=>true, 'ruby_install_name'=>true, 'INSTALL'=>true, 'EXEEXT'=>true}
@@ -246,6 +246,9 @@ print(*v_fast)
 print(*v_others)
 print <<EOS if $unicode_version
   CONFIG["UNICODE_VERSION"] = #{$unicode_version.dump}
+EOS
+print <<EOS if $unicode_emoji_version
+  CONFIG["UNICODE_EMOJI_VERSION"] = #{$unicode_emoji_version.dump}
 EOS
 print <<EOS if /darwin/ =~ arch
   CONFIG["SDKROOT"] = ENV["SDKROOT"] || "" # don't run xcrun everytime, usually useless.

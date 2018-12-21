@@ -45,6 +45,14 @@ arch = @arch@
 sitearch = @sitearch@
 sitedir = @sitedir@
 archlibdir = @archlibdir@
+includedir = @includedir@
+archincludedir = @archincludedir@
+rubylibprefix = @rubylibprefix@
+rubylibdir = @rubylibdir@
+rubyarchprefix = @rubyarchprefix@
+rubyarchdir = @rubyarchdir@
+rubyhdrdir = @rubyhdrdir@
+rubyarchhdrdir = @rubyarchhdrdir@
 ruby_version = @ruby_version@
 RUBY_VERSION_NAME = @RUBY_VERSION_NAME@
 UNIVERSAL_ARCHNAMES = @UNIVERSAL_ARCHNAMES@
@@ -596,7 +604,12 @@ mjit_config.h:
 	echo '#define RUBY_MJIT_CONFIG_H 1'; \
 	echo; \
 	sep=; \
-	quote MJIT_MIN_HEADER_NAME "/$(MJIT_HEADER_INSTALL_DIR)/$(MJIT_MIN_HEADER_NAME)"; \
+	echo '#ifdef LOAD_RELATIVE'; \
+	quote MJIT_HEADER_INSTALL_DIR "/$(MJIT_HEADER_INSTALL_DIR)"; \
+	echo '#else'; \
+	quote MJIT_HEADER_INSTALL_DIR "$(rubyarchhdrdir)"; \
+	echo '#endif'; \
+	quote MJIT_MIN_HEADER_NAME "$(MJIT_MIN_HEADER_NAME)"; \
 	sep=,; \
 	quote "MJIT_CC_COMMON  " $(MJIT_CC); \
 	quote "MJIT_CFLAGS      MJIT_ARCHFLAG" $(MJIT_CFLAGS); \
@@ -613,10 +626,8 @@ mjit_config.h:
 	} > $@
 
 yes-test-almost yes-test-all: mjit_build_dir.$(SOEXT)
-mjit_build_dir.$(SOEXT): $(MJIT_MIN_HEADER)
+mjit_build_dir.$(SOEXT): $(MJIT_MIN_HEADER) $(srcdir)/ruby-runner.c ruby-runner.h
 	$(ECHO) making $@
-	$(Q) { \
-	echo 'const char MJIT_BUILD_DIR[] = "'"`$(CHDIR) . && pwd`"'";'; \
-	} > $(@:.$(SOEXT)=.c)
-	$(Q) cat $(@:.$(SOEXT)=.c)
-	$(Q) $(DLDSHARED) $(MJIT_DLDFLAGS) $(ARCH_FLAG) $(CFLAGS) $(CPPFLAGS) $(@:.$(SOEXT)=.c) $(OUTFLAG)$@
+	$(Q) $(DLDSHARED) $(MJIT_DLDFLAGS) $(ARCH_FLAG) $(CFLAGS) $(CPPFLAGS) \
+		-DMAKE_MJIT_BUILD_DIR=1 -DMJIT_MIN_HEADER='"$(MJIT_MIN_HEADER)"' \
+		$(OUTFLAG)$@ $(srcdir)/ruby-runner.c
