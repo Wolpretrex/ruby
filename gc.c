@@ -2331,7 +2331,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         }
 #endif
         if (/* RHASH_AR_TABLE_P(obj) */ !FL_TEST_RAW(obj, RHASH_ST_TABLE_FLAG)) {
-            ar_table *tab = RHASH(obj)->as.ar;
+            struct ar_table_struct *tab = RHASH(obj)->as.ar;
 
             if (tab) {
                 if (RHASH_TRANSIENT_P(obj)) {
@@ -3455,7 +3455,8 @@ obj_memsize_of(VALUE obj, int use_all_types)
 	break;
       case T_HASH:
         if (RHASH_AR_TABLE_P(obj)) {
-            size += sizeof(ar_table);
+            size_t rb_hash_ar_table_size();
+            size += rb_hash_ar_table_size();
 	}
         else {
             VM_ASSERT(RHASH_ST_TABLE(obj) != NULL);
@@ -4743,9 +4744,9 @@ static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
     if (LIKELY(objspace->mark_func_data == NULL)) {
-        if (RB_TYPE_P(obj, T_NONE)) rb_bug("...");
 	rgengc_check_relation(objspace, obj);
 	if (!gc_mark_set(objspace, obj)) return; /* already marked */
+        if (RB_TYPE_P(obj, T_NONE)) rb_bug("try to mark T_NONE object"); /* check here will help debugging */
 	gc_aging(objspace, obj);
 	gc_grey(objspace, obj);
     }

@@ -71,10 +71,27 @@ f_##n(VALUE x, VALUE y)\
 inline static VALUE
 f_add(VALUE x, VALUE y)
 {
-    if (FIXNUM_ZERO_P(y))
-	return x;
-    if (FIXNUM_ZERO_P(x))
-	return y;
+    if (RB_INTEGER_TYPE_P(x) &&
+        UNLIKELY(rb_method_basic_definition_p(rb_cInteger, idPLUS))) {
+        if (FIXNUM_ZERO_P(x))
+            return y;
+        if (FIXNUM_ZERO_P(y))
+            return x;
+        return rb_int_plus(x, y);
+    }
+    else if (RB_FLOAT_TYPE_P(x) &&
+             UNLIKELY(rb_method_basic_definition_p(rb_cFloat, idPLUS))) {
+        if (FIXNUM_ZERO_P(y))
+            return x;
+        return rb_float_plus(x, y);
+    }
+    else if (RB_TYPE_P(x, T_RATIONAL) &&
+             UNLIKELY(rb_method_basic_definition_p(rb_cRational, idPLUS))) {
+        if (FIXNUM_ZERO_P(y))
+            return x;
+        return rb_rational_plus(x, y);
+    }
+
     return rb_funcall(x, '+', 1, y);
 }
 
@@ -106,20 +123,28 @@ f_gt_p(VALUE x, VALUE y)
 inline static VALUE
 f_mul(VALUE x, VALUE y)
 {
-    if (FIXNUM_ZERO_P(y) && RB_INTEGER_TYPE_P(x))
-	return ZERO;
-    if (FIXNUM_ZERO_P(x) && RB_INTEGER_TYPE_P(y))
-	return ZERO;
-    if (y == ONE) return x;
-    if (x == ONE) return y;
+    if (RB_INTEGER_TYPE_P(x) &&
+        UNLIKELY(rb_method_basic_definition_p(rb_cInteger, idMULT))) {
+        if (FIXNUM_ZERO_P(y))
+            return ZERO;
+        if (FIXNUM_ZERO_P(x) && RB_INTEGER_TYPE_P(y))
+            return ZERO;
+        if (x == ONE) return y;
+        if (y == ONE) return x;
+    }
+    else if (UNLIKELY(rb_method_basic_definition_p(CLASS_OF(x), idMULT))) {
+        if (y == ONE) return x;
+    }
     return rb_funcall(x, '*', 1, y);
 }
 
 inline static VALUE
 f_sub(VALUE x, VALUE y)
 {
-    if (FIXNUM_ZERO_P(y))
+    if (FIXNUM_ZERO_P(y) &&
+        UNLIKELY(rb_method_basic_definition_p(CLASS_OF(x), idMINUS))) {
 	return x;
+    }
     return rb_funcall(x, '-', 1, y);
 }
 
@@ -394,7 +419,7 @@ static VALUE nucomp_s_convert(int argc, VALUE *argv, VALUE klass);
 
 /*
  * call-seq:
- *    Complex(x[, y])  ->  numeric
+ *    Complex(x[, y], exception: false)  ->  numeric
  *
  * Returns x+i*y;
  *
@@ -402,6 +427,9 @@ static VALUE nucomp_s_convert(int argc, VALUE *argv, VALUE klass);
  *    Complex('1+2i')  #=> (1+2i)
  *    Complex(nil)     #=> TypeError
  *    Complex(1, nil)  #=> TypeError
+ *
+ *    Complex(1, nil, exception: false)  #=> nil
+ *    Complex('1+2', exception: false)   #=> nil
  *
  * Syntax of string form:
  *
@@ -438,7 +466,7 @@ nucomp_f_complex(int argc, VALUE *argv, VALUE klass)
         static ID kwds[1];
         VALUE exception;
         if (!kwds[0]) {
-            kwds[0] = rb_intern_const("exception");
+            kwds[0] = idException;
         }
         rb_get_kwargs(opts, kwds, 0, 1, &exception);
         raise = (exception != Qfalse);
@@ -2292,9 +2320,3 @@ Init_Complex(void)
 
     rb_provide("complex.so");	/* for backward compatibility */
 }
-
-/*
-Local variables:
-c-file-style: "ruby"
-End:
-*/

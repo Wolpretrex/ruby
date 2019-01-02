@@ -54,8 +54,22 @@ def version
       case l
       when /^#define RUBY_VERSION "(\d+)\.(\d+)\.(\d+)"$/
         v = $~.captures
+      when /^#define RUBY_VERSION_TEENY (\d+)$/
+        (v ||= [])[2] = $1
       when /^#define RUBY_PATCHLEVEL (-?\d+)$/
         p = $1
+      end
+    end
+  end
+  if v and !v[0]
+    open 'include/ruby/version.h', 'rb' do |f|
+      f.each_line do |l|
+        case l
+        when /^#define RUBY_API_VERSION_MAJOR (\d+)/
+          v[0] = $1
+        when /^#define RUBY_API_VERSION_MINOR (\d+)/
+          v[1] = $1
+        end
       end
     end
   end
@@ -91,12 +105,13 @@ def version_up(inc=nil)
   end
 
   str = open 'version.h', 'rb' do |f| f.read end
+  ruby_release_date = str[/RUBY_RELEASE_YEAR_STR"-"RUBY_RELEASE_MONTH_STR"-"RUBY_RELEASE_DAY_STR/] || d.strftime('"%Y-%m-%d"')
   [%W[RUBY_VERSION      "#{v.join '.'}"],
    %W[RUBY_VERSION_CODE  #{v.join ''}],
    %W[RUBY_VERSION_MAJOR #{v[0]}],
    %W[RUBY_VERSION_MINOR #{v[1]}],
    %W[RUBY_VERSION_TEENY #{v[2]}],
-   %W[RUBY_RELEASE_DATE "#{d.strftime '%Y-%m-%d'}"],
+   %W[RUBY_RELEASE_DATE #{ruby_release_date}],
    %W[RUBY_RELEASE_CODE  #{d.strftime '%Y%m%d'}],
    %W[RUBY_PATCHLEVEL    #{pl}],
    %W[RUBY_RELEASE_YEAR  #{d.year}],

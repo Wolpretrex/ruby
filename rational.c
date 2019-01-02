@@ -529,8 +529,8 @@ static VALUE nurat_s_convert(int argc, VALUE *argv, VALUE klass);
 
 /*
  * call-seq:
- *    Rational(x, y)  ->  rational
- *    Rational(arg)   ->  rational
+ *    Rational(x, y, exception: true)  ->  rational
+ *    Rational(arg, exception: true)   ->  rational
  *
  * Returns +x/y+ or +arg+ as a Rational.
  *
@@ -545,6 +545,8 @@ static VALUE nurat_s_convert(int argc, VALUE *argv, VALUE klass);
  *    Rational("10 cents")  #=> ArgumentError
  *    Rational(nil)         #=> TypeError
  *    Rational(1, nil)      #=> TypeError
+ *
+ *    Rational("10 cents", exception: false)  #=> nil
  *
  * Syntax of the string form:
  *
@@ -575,7 +577,7 @@ nurat_f_rational(int argc, VALUE *argv, VALUE klass)
         static ID kwds[1];
         VALUE exception;
         if (!kwds[0]) {
-            kwds[0] = rb_intern_const("exception");
+            kwds[0] = idException;
         }
         rb_get_kwargs(opts, kwds, 0, 1, &exception);
         raise = (exception != Qfalse);
@@ -2797,9 +2799,3 @@ Init_Rational(void)
 
     rb_provide("rational.so");	/* for backward compatibility */
 }
-
-/*
-Local variables:
-c-file-style: "ruby"
-End:
-*/

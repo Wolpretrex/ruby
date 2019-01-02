@@ -491,6 +491,7 @@ static inline VALUE
 exc_setup_message(const rb_execution_context_t *ec, VALUE mesg, VALUE *cause)
 {
     int nocause = 0;
+    int nocircular = 0;
 
     if (NIL_P(mesg)) {
 	mesg = ec->errinfo;
@@ -500,14 +501,31 @@ exc_setup_message(const rb_execution_context_t *ec, VALUE mesg, VALUE *cause)
     if (NIL_P(mesg)) {
 	mesg = rb_exc_new(rb_eRuntimeError, 0, 0);
 	nocause = 0;
+        nocircular = 1;
     }
     if (*cause == Qundef) {
 	if (nocause) {
 	    *cause = Qnil;
+            nocircular = 1;
 	}
 	else if (!rb_ivar_defined(mesg, id_cause)) {
 	    *cause = get_ec_errinfo(ec);
 	}
+        else {
+            nocircular = 1;
+        }
+    }
+    else if (!NIL_P(*cause) && !rb_obj_is_kind_of(*cause, rb_eException)) {
+        rb_raise(rb_eTypeError, "exception object expected");
+    }
+
+    if (!nocircular && !NIL_P(*cause) && *cause != Qundef && *cause != mesg) {
+        VALUE c = *cause;
+        while (!NIL_P(c = rb_attr_get(c, id_cause))) {
+            if (c == mesg) {
+                rb_raise(rb_eArgError, "circular causes");
+            }
+        }
     }
     return mesg;
 }
@@ -688,11 +706,11 @@ extract_raise_opts(int argc, const VALUE *argv, VALUE *opts)
 /*
  *  call-seq:
  *     raise
- *     raise(string)
- *     raise(exception [, string [, array]])
+ *     raise(string, cause: $!)
+ *     raise(exception [, string [, array]], cause: $!)
  *     fail
- *     fail(string)
- *     fail(exception [, string [, array]])
+ *     fail(string, cause: $!)
+ *     fail(exception [, string [, array]], cause: $!)
  *
  *  With no arguments, raises the exception in <code>$!</code> or raises
  *  a <code>RuntimeError</code> if <code>$!</code> is +nil+.
@@ -707,6 +725,11 @@ extract_raise_opts(int argc, const VALUE *argv, VALUE *opts)
  *
  *     raise "Failed to create socket"
  *     raise ArgumentError, "No parameters", caller
+ *
+ *  The +cause+ of the generated exception is automatically set to the
+ *  "current" exception (<code>$!</code>) if any.  An alternative
+ *  value, either an +Exception+ object or +nil+, can be specified via
+ *  the +:cause+ argument.
  */
 
 static VALUE

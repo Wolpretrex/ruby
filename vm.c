@@ -28,6 +28,17 @@
 
 VALUE rb_str_concat_literals(size_t, const VALUE*);
 
+/* :FIXME: This #ifdef is because we build pch in case of mswin and
+ * not in case of other situations.  That distinction might change in
+ * a future.  We would better make it detectable in something better
+ * than just _MSC_VER. */
+#ifdef _MSC_VER
+RUBY_FUNC_EXPORTED
+#else
+MJIT_FUNC_EXPORTED
+#endif
+VALUE vm_exec(rb_execution_context_t *, int);
+
 PUREFUNC(static inline const VALUE *VM_EP_LEP(const VALUE *));
 static inline const VALUE *
 VM_EP_LEP(const VALUE *ep)
@@ -1870,7 +1881,7 @@ static inline VALUE
 vm_exec_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
                          VALUE errinfo, VALUE *initial);
 
-MJIT_FUNC_EXPORTED VALUE
+VALUE
 vm_exec(rb_execution_context_t *ec, int mjit_enable_p)
 {
     enum ruby_tag_type state;
@@ -2167,7 +2178,7 @@ rb_ec_frame_method_id_and_class(const rb_execution_context_t *ec, ID *idp, ID *c
     return rb_vm_control_frame_id_and_class(ec->cfp, idp, called_idp, klassp);
 }
 
-RUBY_FUNC_EXPORTED int
+int
 rb_frame_method_id_and_class(ID *idp, VALUE *klassp)
 {
     return rb_ec_frame_method_id_and_class(GET_EC(), idp, 0, klassp);
@@ -2906,6 +2917,18 @@ static VALUE usage_analysis_insn_stop(VALUE self);
 static VALUE usage_analysis_operand_stop(VALUE self);
 static VALUE usage_analysis_register_stop(VALUE self);
 #endif
+
+/*
+ * Document-method: RubyVM::resolve_feature_path
+ * call-seq:
+ *   RubyVM.resolve_feature_path(feature) -> [:rb or :so, path]
+ *
+ * Identifies the file that will be loaded by "require(feature)".
+ * This API is experimental and just for internal.
+ *
+ *    RubyVM.resolve_feature_path("set")
+ *      #=> [:rb, "/path/to/set.rb"]
+ */
 
 VALUE rb_resolve_feature_path(VALUE klass, VALUE fname);
 

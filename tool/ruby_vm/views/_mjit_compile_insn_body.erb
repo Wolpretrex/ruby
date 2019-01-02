@@ -1,4 +1,4 @@
-% # -*- mode:c; style:ruby; coding: utf-8; indent-tabs-mode: nil -*-
+% # -*- C -*-
 % # Copyright (c) 2018 Takashi Kokubun.  All rights reserved.
 % #
 % # This file is a part of  the programming language Ruby.  Permission is hereby
@@ -28,6 +28,12 @@
 %         #{indent}return val;
 %         #endif
 %       RESTORE_REGS
+%     end
+%     expr.gsub!(/^(?<indent>\s*)NEXT_INSN\(\);\n/) do
+%       indent = Regexp.last_match[:indent]
+%       <<-end.gsub(/^ +/, '')
+%         #{indent}UNREACHABLE_RETURN(Qundef);
+%       end
 %     end
 %   end
 % end

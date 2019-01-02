@@ -468,6 +468,9 @@ node_children(rb_ast_t *ast, NODE *node)
                                     NEW_CHILD(ast, node->nd_args));
       case NODE_VCALL:
         return rb_ary_new_from_args(1, ID2SYM(node->nd_mid));
+      case NODE_METHREF:
+        return rb_ary_new_from_args(2, NEW_CHILD(ast, node->nd_recv),
+                                    ID2SYM(node->nd_mid));
       case NODE_SUPER:
         return rb_ary_new_from_node_args(ast, 1, node->nd_args);
       case NODE_ZSUPER:
@@ -721,9 +724,10 @@ rb_ast_node_inspect(VALUE self)
     str = rb_str_new2("#<");
 
     rb_str_append(str, cname);
-    rb_str_cat2(str, "(");
-    rb_str_catf(str, "%s(%d) %d:%d, %d:%d", node_type_to_str(data->node), nd_type(data->node), nd_first_lineno(data->node), nd_first_column(data->node), nd_last_lineno(data->node), nd_last_column(data->node));
-    rb_str_cat2(str, "): >");
+    rb_str_catf(str, ":%s@%d:%d-%d:%d>",
+                node_type_to_str(data->node),
+                nd_first_lineno(data->node), nd_first_column(data->node),
+                nd_last_lineno(data->node), nd_last_column(data->node));
 
     return str;
 }

@@ -1687,8 +1687,8 @@ rb_false(VALUE obj)
 static VALUE
 rb_obj_match(VALUE obj1, VALUE obj2)
 {
-    rb_warning("deprecated Object#=~ is called on %"PRIsVALUE
-               "; it always returns nil", rb_obj_class(obj1));
+    rb_warn("deprecated Object#=~ is called on %"PRIsVALUE
+            "; it always returns nil", rb_obj_class(obj1));
     return Qnil;
 }
 
@@ -3213,7 +3213,7 @@ opts_exception_p(VALUE opts)
     static ID kwds[1];
     VALUE exception;
     if (!kwds[0]) {
-        kwds[0] = rb_intern_const("exception");
+        kwds[0] = idException;
     }
     rb_get_kwargs(opts, kwds, 0, 1, &exception);
     return exception != Qfalse;
@@ -3221,7 +3221,7 @@ opts_exception_p(VALUE opts)
 
 /*
  *  call-seq:
- *     Integer(arg, base=0)    -> integer
+ *     Integer(arg, base=0, exception: true)    -> integer
  *
  *  Converts <i>arg</i> to an <code>Integer</code>.
  *  Numeric types are converted directly (with floating point numbers
@@ -3232,15 +3232,23 @@ opts_exception_p(VALUE opts)
  *  In any case, strings should be strictly conformed to numeric
  *  representation. This behavior is different from that of
  *  <code>String#to_i</code>.  Non string values will be converted by first
- *  trying <code>to_int</code>, then <code>to_i</code>. Passing <code>nil</code>
- *  raises a TypeError.
+ *  trying <code>to_int</code>, then <code>to_i</code>.
+ *
+ *  Passing <code>nil</code> raises a TypeError, while passing a String that
+ *  does not conform with numeric representation raises an ArgumentError.
+ *  This behavior can be altered by passing <code>exception: false</code>,
+ *  in this case a not convertible value will return <code>nil</code>.
  *
  *     Integer(123.999)    #=> 123
  *     Integer("0x1a")     #=> 26
  *     Integer(Time.new)   #=> 1204973019
  *     Integer("0930", 10) #=> 930
  *     Integer("111", 2)   #=> 7
- *     Integer(nil)        #=> TypeError
+ *     Integer(nil)        #=> TypeError: can't convert nil into Integer
+ *     Integer("x")        #=> ArgumentError: invalid value for Integer(): "x"
+ *
+ *     Integer("x", exception: false)        #=> nil
+ *
  */
 
 static VALUE
@@ -3575,17 +3583,19 @@ rb_Float(VALUE val)
 
 /*
  *  call-seq:
- *     Float(arg)    -> float
+ *     Float(arg, exception: true)    -> float
  *
  *  Returns <i>arg</i> converted to a float. Numeric types are converted
  *  directly, and with exception to string and nil the rest are converted using <i>arg</i>.to_f.
  *  Converting a <code>string</code> with invalid characters will result in a <code>ArgumentError</code>.
  *  Converting <code>nil</code> generates a <code>TypeError</code>.
+ *  Exceptions can be suppressed by passing <code>exception: false</code>.
  *
  *     Float(1)                 #=> 1.0
  *     Float("123.456")         #=> 123.456
  *     Float("123.0_badstring") #=> ArgumentError: invalid value for Float(): "123.0_badstring"
  *     Float(nil)               #=> TypeError: can't convert nil into Float
+ *     Float("123.0_badstring", exception: false)  #=> nil
  */
 
 static VALUE

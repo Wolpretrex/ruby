@@ -443,6 +443,13 @@ class TestJIT < Test::Unit::TestCase
     end;
   end
 
+  def test_compile_insn_methodref
+    assert_compile_once("#{<<~"begin;"}\n#{<<~'end;'}", result_inspect: '"main"', insns: %i[methodref])
+    begin;
+      self.:inspect.call
+    end;
+  end
+
   def test_compile_insn_inlinecache
     assert_compile_once('Struct', result_inspect: 'Struct', insns: %i[opt_getinlinecache opt_setinlinecache])
   end
@@ -607,9 +614,9 @@ class TestJIT < Test::Unit::TestCase
         assert_equal(3, compactions.size, debug_info)
       end
 
-      if appveyor_mswin?
-        # "Permission Denied" error is preventing to remove so file on AppVeyor.
-        warn 'skipped to test directory emptiness in TestJIT#test_unload_units on AppVeyor mswin'
+      if RUBY_PLATFORM.match?(/mswin/)
+        # "Permission Denied" error is preventing to remove so file on AppVeyor/RubyCI.
+        skip 'Removing so file is randomly failing on AppVeyor/RubyCI mswin due to Permission Denied.'
       else
         # verify .o files are deleted on unload_units
         assert_send([Dir, :empty?, dir], debug_info)
@@ -764,8 +771,8 @@ class TestJIT < Test::Unit::TestCase
   end
 
   def test_clean_so
-    if appveyor_mswin?
-      skip 'Removing so file is failing on AppVeyor mswin due to Permission Denied.'
+    if RUBY_PLATFORM.match?(/mswin/)
+      skip 'Removing so file is randomly failing on AppVeyor/RubyCI mswin due to Permission Denied.'
     end
     Dir.mktmpdir("jit_test_clean_so_") do |dir|
       code = "x = 0; 10.times {|i|x+=i}"
@@ -870,6 +877,7 @@ class TestJIT < Test::Unit::TestCase
 
         before_fork; before_fork # the child should not delete this .o file
         pid = Process.fork do # this child should not delete shared .pch file
+          sleep 0.5 # to prevent mixing outputs on Solaris
           after_fork; after_fork # this child does not share JIT-ed after_fork with parent
         end
         after_fork; after_fork # this parent does not share JIT-ed after_fork with child
@@ -889,10 +897,6 @@ class TestJIT < Test::Unit::TestCase
   end if defined?(fork)
 
   private
-
-  def appveyor_mswin?
-    ENV['APPVEYOR'] == 'True' && RUBY_PLATFORM.match?(/mswin/)
-  end
 
   # The shortest way to test one proc
   def assert_compile_once(script, result_inspect:, insns: [])

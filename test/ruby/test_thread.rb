@@ -1242,22 +1242,22 @@ q.pop
   def test_fork_while_parent_locked
     skip 'needs fork' unless Process.respond_to?(:fork)
     m = Thread::Mutex.new
-    failures = 0
-    run = true
-    thrs = 50.times.map do
-      Thread.new do
-        while run
-          pid = fork { m.synchronize {} }
-          m.synchronize {}
-          _, st = Process.waitpid2(pid)
-          m.synchronize { failures += 1 } unless st.success?
-        end
+    nr = 1
+    thrs = []
+    m.synchronize do
+      thrs = nr.times.map { Thread.new { m.synchronize {} } }
+      thrs.each { Thread.pass }
+      pid = fork do
+        m.locked? or exit!(2)
+        thrs = nr.times.map { Thread.new { m.synchronize {} } }
+        m.unlock
+        thrs.each { |t| t.join(1) == t or exit!(1) }
+        exit!(0)
       end
+      _, st = Process.waitpid2(pid)
+      assert_predicate st, :success?, '[ruby-core:90312] [Bug #15383]'
     end
-    sleep 0.5
-    run = false
-    thrs.each(&:join)
-    assert_equal 0, failures, '[ruby-core:90312] [Bug #15383]'
+    thrs.each { |t| assert_same t, t.join(1) }
   end
 
   def test_fork_while_mutex_locked_by_forker

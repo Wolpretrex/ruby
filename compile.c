@@ -2061,6 +2061,7 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 		/* update sp */
 		sp = calc_sp_depth(sp, iobj);
 		insn_num++;
+                events = iobj->insn_info.events |= events;
                 if (ISEQ_COVERAGE(iseq)) {
                     if (ISEQ_LINE_COVERAGE(iseq) && (events & RUBY_EVENT_COVERAGE_LINE) &&
                         !(rb_get_coverage_mode() & COVERAGE_TARGET_ONESHOT_LINES)) {
@@ -2077,7 +2078,6 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
                     }
 		}
                 code_index += insn_data_length(iobj);
-		iobj->insn_info.events |= events;
 		events = 0;
                 data = 0;
 		break;
@@ -4491,6 +4491,7 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
 {
     enum defined_type expr_type = DEFINED_NOT_DEFINED;
     enum node_type type;
+    const int line = nd_line(node);
 
     switch (type = nd_type(node)) {
 
@@ -4515,9 +4516,9 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
 	    defined_expr0(iseq, ret, vals->nd_head, lfinish, Qfalse);
 
 	    if (!lfinish[1]) {
-		lfinish[1] = NEW_LABEL(nd_line(node));
+                lfinish[1] = NEW_LABEL(line);
 	    }
-	    ADD_INSNL(ret, nd_line(node), branchunless, lfinish[1]);
+            ADD_INSNL(ret, line, branchunless, lfinish[1]);
 	} while ((vals = vals->nd_next) != NULL);
       }
       case NODE_STR:
@@ -4536,44 +4537,44 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
 	break;
 
       case NODE_IVAR:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_IVAR),
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_IVAR),
 		  ID2SYM(node->nd_vid), needstr);
 	return 1;
 
       case NODE_GVAR:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_GVAR),
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_GVAR),
 		  ID2SYM(node->nd_entry->id), needstr);
 	return 1;
 
       case NODE_CVAR:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_CVAR),
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_CVAR),
 		  ID2SYM(node->nd_vid), needstr);
 	return 1;
 
       case NODE_CONST:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_CONST),
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_CONST),
 		  ID2SYM(node->nd_vid), needstr);
 	return 1;
       case NODE_COLON2:
 	if (!lfinish[1]) {
-	    lfinish[1] = NEW_LABEL(nd_line(node));
+            lfinish[1] = NEW_LABEL(line);
 	}
 	defined_expr0(iseq, ret, node->nd_head, lfinish, Qfalse);
-	ADD_INSNL(ret, nd_line(node), branchunless, lfinish[1]);
+        ADD_INSNL(ret, line, branchunless, lfinish[1]);
 	COMPILE(ret, "defined/colon2#nd_head", node->nd_head);
 
-	ADD_INSN3(ret, nd_line(node), defined,
+        ADD_INSN3(ret, line, defined,
 		  (rb_is_const_id(node->nd_mid) ?
 		   INT2FIX(DEFINED_CONST) : INT2FIX(DEFINED_METHOD)),
 		  ID2SYM(node->nd_mid), needstr);
 	return 1;
       case NODE_COLON3:
-	ADD_INSN1(ret, nd_line(node), putobject, rb_cObject);
-	ADD_INSN3(ret, nd_line(node), defined,
+        ADD_INSN1(ret, line, putobject, rb_cObject);
+        ADD_INSN3(ret, line, defined,
 		  INT2FIX(DEFINED_CONST), ID2SYM(node->nd_mid), needstr);
 	return 1;
 
@@ -4582,51 +4583,53 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
       case NODE_OPCALL:
       case NODE_VCALL:
       case NODE_FCALL:
+      case NODE_METHREF:
       case NODE_ATTRASGN:{
 	const int explicit_receiver =
 	    (type == NODE_CALL || type == NODE_OPCALL ||
+             type == NODE_METHREF ||
 	     (type == NODE_ATTRASGN && !private_recv_p(node)));
 
 	if (!lfinish[1] && (node->nd_args || explicit_receiver)) {
-	    lfinish[1] = NEW_LABEL(nd_line(node));
+            lfinish[1] = NEW_LABEL(line);
 	}
 	if (node->nd_args) {
 	    defined_expr0(iseq, ret, node->nd_args, lfinish, Qfalse);
-	    ADD_INSNL(ret, nd_line(node), branchunless, lfinish[1]);
+            ADD_INSNL(ret, line, branchunless, lfinish[1]);
 	}
 	if (explicit_receiver) {
 	    defined_expr0(iseq, ret, node->nd_recv, lfinish, Qfalse);
-	    ADD_INSNL(ret, nd_line(node), branchunless, lfinish[1]);
+            ADD_INSNL(ret, line, branchunless, lfinish[1]);
 	    COMPILE(ret, "defined/recv", node->nd_recv);
-	    ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_METHOD),
+            ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_METHOD),
 		      ID2SYM(node->nd_mid), needstr);
 	}
 	else {
-	    ADD_INSN(ret, nd_line(node), putself);
-	    ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_FUNC),
+            ADD_INSN(ret, line, putself);
+            ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_FUNC),
 		      ID2SYM(node->nd_mid), needstr);
 	}
 	return 1;
       }
 
       case NODE_YIELD:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_YIELD), 0,
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_YIELD), 0,
 		  needstr);
 	return 1;
 
       case NODE_BACK_REF:
       case NODE_NTH_REF:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_REF),
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_REF),
 		  INT2FIX((node->nd_nth << 1) | (type == NODE_BACK_REF)),
 		  needstr);
 	return 1;
 
       case NODE_SUPER:
       case NODE_ZSUPER:
-	ADD_INSN(ret, nd_line(node), putnil);
-	ADD_INSN3(ret, nd_line(node), defined, INT2FIX(DEFINED_ZSUPER), 0,
+        ADD_INSN(ret, line, putnil);
+        ADD_INSN3(ret, line, defined, INT2FIX(DEFINED_ZSUPER), 0,
 		  needstr);
 	return 1;
 
@@ -4649,10 +4652,10 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
     if (expr_type) {
 	if (needstr != Qfalse) {
 	    VALUE str = rb_iseq_defined_string(expr_type);
-	    ADD_INSN1(ret, nd_line(node), putobject, str);
+            ADD_INSN1(ret, line, putobject, str);
 	}
 	else {
-	    ADD_INSN1(ret, nd_line(node), putobject, Qtrue);
+            ADD_INSN1(ret, line, putobject, Qtrue);
 	}
 	return 1;
     }
@@ -7459,8 +7462,10 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, in
 	DECL_ANCHOR(args);
 	unsigned int flag = 0;
 	ID mid = node->nd_mid;
-	LABEL *lskip = 0;
+        LABEL *else_label = 0;
+        LABEL *end_label = 0;
 	VALUE argc;
+        VALUE branches = 0;
 
 	/* optimization shortcut
 	 *   obj["literal"] = value -> opt_aset_with(obj, "literal", value)
@@ -7500,8 +7505,11 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, in
 	    /* safe nav attr */
 	    mid = rb_id_attrset(mid);
 	    ADD_INSN(recv, line, dup);
-	    lskip = NEW_LABEL(line);
-	    ADD_INSNL(recv, line, branchnil, lskip);
+            else_label = NEW_LABEL(line);
+            end_label = NEW_LABEL(line);
+            DECL_BRANCH_BASE(branches, nd_first_lineno(node), nd_first_column(node), nd_last_lineno(node), nd_last_column(node), "&.");
+            ADD_INSNL(recv, line, branchnil, else_label);
+            ADD_TRACE_BRANCH_COVERAGE(recv, nd_first_lineno(node), nd_first_column(node), nd_last_lineno(node), nd_last_column(node), "then", branches);
 	}
 	if (!popped) {
 	    ADD_INSN(ret, line, putnil);
@@ -7533,7 +7541,12 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, in
 	    ADD_SEQ(ret, args);
 	}
 	ADD_SEND_WITH_FLAG(ret, line, mid, argc, INT2FIX(flag));
-	if (lskip) ADD_LABEL(ret, lskip);
+        if (else_label && end_label) {
+            ADD_INSNL(ret, line, jump, end_label);
+            ADD_LABEL(ret, else_label);
+            ADD_TRACE_BRANCH_COVERAGE(ret, nd_first_lineno(node), nd_first_column(node), nd_last_lineno(node), nd_last_column(node), "else", branches);
+            ADD_LABEL(ret, end_label);
+        }
 	ADD_INSN(ret, line, pop);
 
 	break;
@@ -7551,6 +7564,10 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, in
 	}
 	break;
       }
+      case NODE_METHREF:
+        CHECK(COMPILE_(ret, "receiver", node->nd_recv, popped));
+        ADD_ELEM(ret, &new_insn_body(iseq, line, BIN(methodref), 1, ID2SYM(node->nd_mid))->link);
+        break;
       default:
 	UNKNOWN_NODE("iseq_compile_each", node, COMPILE_NG);
       ng:

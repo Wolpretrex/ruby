@@ -19,6 +19,12 @@
 #include "ruby/config.h"
 #include "debug_counter.h"
 
+extern rb_method_definition_t *rb_method_definition_create(rb_method_type_t type, ID mid);
+extern void rb_method_definition_set(const rb_method_entry_t *me, rb_method_definition_t *def, void *opts);
+extern int rb_method_definition_eq(const rb_method_definition_t *d1, const rb_method_definition_t *d2);
+extern VALUE rb_make_no_method_exception(VALUE exc, VALUE format, VALUE obj,
+                                         int argc, const VALUE *argv, int priv);
+
 /* control stack frame */
 
 static rb_control_frame_t *vm_get_ruby_level_caller_cfp(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);
@@ -1385,6 +1391,35 @@ opt_equal_fallback(VALUE recv, VALUE obj, CALL_INFO ci, CALL_CACHE cc)
 #define BUILTIN_CLASS_P(x, k) (!SPECIAL_CONST_P(x) && RBASIC_CLASS(x) == k)
 #define EQ_UNREDEFINED_P(t) BASIC_OP_UNREDEFINED_P(BOP_EQ, t##_REDEFINED_OP_FLAG)
 
+static bool
+FIXNUM_2_P(VALUE a, VALUE b)
+{
+    /* FIXNUM_P(a) && FIXNUM_P(b)
+     * == ((a & 1) && (b & 1))
+     * == a & b & 1 */
+    SIGNED_VALUE x = a;
+    SIGNED_VALUE y = b;
+    SIGNED_VALUE z = x & y & 1;
+    return z == 1;
+}
+
+static bool
+FLONUM_2_P(VALUE a, VALUE b)
+{
+#if USE_FLONUM
+    /* FLONUM_P(a) && FLONUM_P(b)
+     * == ((a & 3) == 2) && ((b & 3) == 2)
+     * == ! ((a ^ 2) | (b ^ 2) & 3)
+     */
+    SIGNED_VALUE x = a;
+    SIGNED_VALUE y = b;
+    SIGNED_VALUE z = ((x ^ 2) | (y ^ 2)) & 3;
+    return !z;
+#else
+    return false;
+#endif
+}
+
 /* 1: compare by identity, 0: not applicable, -1: redefined */
 static inline int
 comparable_by_identity(VALUE recv, VALUE obj)
@@ -1617,6 +1652,19 @@ rb_simple_iseq_p(const rb_iseq_t *iseq)
 	   iseq->body->param.flags.has_kw == FALSE &&
 	   iseq->body->param.flags.has_kwrest == FALSE &&
 	   iseq->body->param.flags.has_block == FALSE;
+}
+
+static void
+CALLER_SETUP_ARG(struct rb_control_frame_struct *restrict cfp,
+                 struct rb_calling_info *restrict calling,
+                 const struct rb_call_info *restrict ci)
+{
+    if (UNLIKELY(IS_ARGS_SPLAT(ci))) {
+        vm_caller_setup_arg_splat(cfp, calling);
+    }
+    if (UNLIKELY(IS_ARGS_KEYWORD(ci))) {
+        vm_caller_setup_arg_kw(cfp, calling, ci);
+    }
 }
 
 static inline int
@@ -2444,8 +2492,7 @@ vm_super_outside(void)
 }
 
 static void
-vm_search_super_method(const rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
-		       struct rb_calling_info *calling, struct rb_call_info *ci, struct rb_call_cache *cc)
+vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_info *ci, struct rb_call_cache *cc, VALUE recv)
 {
     VALUE current_defined_class, klass;
     const rb_callable_method_entry_t *me = rb_vm_frame_method_entry(reg_cfp);
@@ -2463,14 +2510,14 @@ vm_search_super_method(const rb_execution_context_t *ec, rb_control_frame_t *reg
     if (BUILTIN_TYPE(current_defined_class) != T_MODULE &&
 	BUILTIN_TYPE(current_defined_class) != T_ICLASS && /* bound UnboundMethod */
 	!FL_TEST(current_defined_class, RMODULE_INCLUDED_INTO_REFINEMENT) &&
-	!rb_obj_is_kind_of(calling->recv, current_defined_class)) {
+        !rb_obj_is_kind_of(recv, current_defined_class)) {
 	VALUE m = RB_TYPE_P(current_defined_class, T_ICLASS) ?
 	    RBASIC(current_defined_class)->klass : current_defined_class;
 
 	rb_raise(rb_eTypeError,
 		 "self has wrong type to call super in this context: "
 		 "%"PRIsVALUE" (expected %"PRIsVALUE")",
-		 rb_obj_class(calling->recv), m);
+                 rb_obj_class(recv), m);
     }
 
     if (me->def->type == VM_METHOD_TYPE_BMETHOD && (ci->flag & VM_CALL_ZSUPER)) {
@@ -3185,6 +3232,103 @@ vm_find_or_create_class_by_id(ID id,
       default:
 	rb_bug("unknown defineclass type: %d", (int)type);
     }
+}
+
+static void
+vm_search_method_wrap(
+    const struct rb_control_frame_struct *reg_cfp,
+    struct rb_call_info *ci,
+    struct rb_call_cache *cc,
+    VALUE recv)
+{
+    vm_search_method(ci, cc, recv);
+}
+
+static void
+vm_search_invokeblock(
+    const struct rb_control_frame_struct *reg_cfp,
+    struct rb_call_info *ci,
+    struct rb_call_cache *cc,
+    VALUE recv)
+{
+    /* Does nothing. */
+}
+
+static VALUE
+vm_invokeblock_i(
+    struct rb_execution_context_struct *ec,
+    struct rb_control_frame_struct *reg_cfp,
+    struct rb_calling_info *calling,
+    const struct rb_call_info *ci,
+    struct rb_call_cache *cc)
+{
+    VALUE block_handler = VM_CF_BLOCK_HANDLER(GET_CFP());
+
+    if (block_handler == VM_BLOCK_HANDLER_NONE) {
+        rb_vm_localjump_error("no block given (yield)", Qnil, 0);
+    }
+    else {
+        return vm_invoke_block(ec, GET_CFP(), calling, ci, block_handler);
+    }
+}
+
+static VALUE
+vm_sendish(
+    struct rb_execution_context_struct *ec,
+    struct rb_control_frame_struct *reg_cfp,
+    struct rb_call_info *ci,
+    struct rb_call_cache *cc,
+    VALUE block_handler,
+    void (*method_explorer)(
+        const struct rb_control_frame_struct *reg_cfp,
+        struct rb_call_info *ci,
+        struct rb_call_cache *cc,
+        VALUE recv))
+{
+    VALUE val;
+    int argc = ci->orig_argc;
+    VALUE recv = TOPN(argc);
+    struct rb_calling_info calling;
+
+    calling.block_handler = block_handler;
+    calling.recv = recv;
+    calling.argc = argc;
+
+    method_explorer(GET_CFP(), ci, cc, recv);
+
+    val = cc->call(ec, GET_CFP(), &calling, ci, cc);
+
+    if (val != Qundef) {
+        return val;             /* CFUNC normal return */
+    }
+    else {
+        RESTORE_REGS();         /* CFP pushed in cc->call() */
+    }
+
+#ifdef MJIT_HEADER
+    /* When calling ISeq which may catch an exception from JIT-ed
+       code, we should not call mjit_exec directly to prevent the
+       caller frame from being canceled. That's because the caller
+       frame may have stack values in the local variables and the
+       cancelling the caller frame will purge them. But directly
+       calling mjit_exec is faster... */
+    if (GET_ISEQ()->body->catch_except_p) {
+        VM_ENV_FLAGS_SET(GET_EP(), VM_FRAME_FLAG_FINISH);
+        return vm_exec(ec, true);
+    }
+    else if ((val = mjit_exec(ec)) == Qundef) {
+        VM_ENV_FLAGS_SET(GET_EP(), VM_FRAME_FLAG_FINISH);
+        return vm_exec(ec, false);
+    }
+    else {
+        return val;
+    }
+#else
+    /* When calling from VM, longjmp in the callee won't purge any
+       JIT-ed caller frames.  So it's safe to directly call
+       mjit_exec. */
+    return mjit_exec(ec);
+#endif
 }
 
 static VALUE
@@ -3941,10 +4085,7 @@ vm_trace(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, const VALUE *p
 }
 
 #if VM_CHECK_MODE > 0
-static NORETURN( NOINLINE(
-#if GCC_VERSION_SINCE(4, 3, 0)
-__attribute__((__cold__))
-#endif
+static NORETURN( NOINLINE( COLDFUNC
 void vm_canary_is_found_dead(enum ruby_vminsn_type i, VALUE c)));
 static VALUE vm_stack_canary;
 

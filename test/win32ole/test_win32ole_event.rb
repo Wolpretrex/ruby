@@ -137,9 +137,8 @@ if defined?(WIN32OLE_EVENT)
         ev.on_event(:OnObjectReady) {|*args|
           handler1
         }
-        message_loop
-        # @event1 randomly becomes "" here: https://ci.appveyor.com/project/ruby/ruby/builds/20975541/job/b380m0q9ed0rdv7v
-        assert_match_with_retries(/\Ahandler1\z/, :@event1)
+        message_loop(:@event1)
+        assert_equal("handler1", @event1)
       end
 
       private
@@ -160,6 +159,7 @@ if defined?(WIN32OLE_EVENT)
           $stderr.puts "test_win32ole_event.rb: retrying until #{ivarname} matches #{regexp} (tries: #{tries})..."
           sleep(2 ** tries) # sleep at most 31s in total
           ivar = instance_variable_get(ivarname)
+          tries += 1
         end
 
         assert_match(regexp, ivar)
