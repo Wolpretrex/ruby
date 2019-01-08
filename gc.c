@@ -7843,12 +7843,12 @@ rb_gc_compact(VALUE mod)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    /* Ensure objects are pinned */
-    rb_gc();
-
     /* Drain interrupts so that THEAP has a chance to evacuate before
      * any possible compaction. */
     RUBY_VM_CHECK_INTS(GET_EC());
+
+    /* Ensure objects are pinned */
+    rb_gc();
 
     gc_compact_heap(objspace);
 
@@ -7884,11 +7884,11 @@ gc_verify_compaction_references(VALUE dummy)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    /* Ensure objects are pinned */
-    rb_gc();
-
     /* Double heap size */
     heap_add_pages(objspace, heap_eden, heap_allocated_pages);
+
+    /* Ensure objects are pinned */
+    rb_gc();
 
     /* Compact heap */
     gc_compact_heap(objspace);
