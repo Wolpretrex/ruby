@@ -226,25 +226,23 @@ env:
           - zlib1g:i386
 
   - &pedanticism
-    name: -ansi -pedantic
+    name: -std=c99 -pedantic
     <<: *linux
     <<: *make-test-only
     compiler: clang
     env:
-      - GCC_FLAGS='-ansi -Werror=pedantic -pedantic-errors -std=iso9899:1990'
+      - GCC_FLAGS='-std=c99 -Werror=pedantic -pedantic-errors'
       - CONFIG_FLAG=
       - JOBS=
       - >-
         warnflags='
         -Wall
         -Wextra
-        -Werror=declaration-after-statement
         -Werror=deprecated-declarations
         -Werror=division-by-zero
         -Werror=extra-tokens
         -Werror=implicit-function-declaration
         -Werror=implicit-int
-        -Werror=long-long
         -Werror=pointer-arith
         -Werror=shorten-64-to-32
         -Werror=write-strings
@@ -370,7 +368,7 @@ before_script:
 
 script:
   - $SETARCH make -s test TESTOPTS="${TESTOPTS=$JOBS -q --tty=no}"
-  - travis_wait 40 $SETARCH make -s test-all -o exts TESTOPTS="${TEST_ALL_OPTS=$TESTOPTS}"
+  - travis_wait 40 $SETARCH make -s test-all -o exts TESTOPTS="${TEST_ALL_OPTS=$TESTOPTS}" RUBYOPT="-w"
   - $SETARCH make -s test-spec MSPECOPT=-ff # not using `-j` because sometimes `mspec -j` silently dies
 
 # Branch matrix.  Not all branches are Travis-ready so we limit branches here.

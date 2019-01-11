@@ -72,7 +72,7 @@ inline static VALUE
 f_add(VALUE x, VALUE y)
 {
     if (RB_INTEGER_TYPE_P(x) &&
-        UNLIKELY(rb_method_basic_definition_p(rb_cInteger, idPLUS))) {
+        LIKELY(rb_method_basic_definition_p(rb_cInteger, idPLUS))) {
         if (FIXNUM_ZERO_P(x))
             return y;
         if (FIXNUM_ZERO_P(y))
@@ -80,13 +80,13 @@ f_add(VALUE x, VALUE y)
         return rb_int_plus(x, y);
     }
     else if (RB_FLOAT_TYPE_P(x) &&
-             UNLIKELY(rb_method_basic_definition_p(rb_cFloat, idPLUS))) {
+             LIKELY(rb_method_basic_definition_p(rb_cFloat, idPLUS))) {
         if (FIXNUM_ZERO_P(y))
             return x;
         return rb_float_plus(x, y);
     }
     else if (RB_TYPE_P(x, T_RATIONAL) &&
-             UNLIKELY(rb_method_basic_definition_p(rb_cRational, idPLUS))) {
+             LIKELY(rb_method_basic_definition_p(rb_cRational, idPLUS))) {
         if (FIXNUM_ZERO_P(y))
             return x;
         return rb_rational_plus(x, y);
@@ -124,15 +124,26 @@ inline static VALUE
 f_mul(VALUE x, VALUE y)
 {
     if (RB_INTEGER_TYPE_P(x) &&
-        UNLIKELY(rb_method_basic_definition_p(rb_cInteger, idMULT))) {
+        LIKELY(rb_method_basic_definition_p(rb_cInteger, idMULT))) {
         if (FIXNUM_ZERO_P(y))
             return ZERO;
         if (FIXNUM_ZERO_P(x) && RB_INTEGER_TYPE_P(y))
             return ZERO;
         if (x == ONE) return y;
         if (y == ONE) return x;
+        return rb_int_mul(x, y);
     }
-    else if (UNLIKELY(rb_method_basic_definition_p(CLASS_OF(x), idMULT))) {
+    else if (RB_FLOAT_TYPE_P(x) &&
+             LIKELY(rb_method_basic_definition_p(rb_cFloat, idMULT))) {
+        if (y == ONE) return x;
+        return rb_float_mul(x, y);
+    }
+    else if (RB_TYPE_P(x, T_RATIONAL) &&
+             LIKELY(rb_method_basic_definition_p(rb_cRational, idMULT))) {
+        if (y == ONE) return x;
+        return rb_rational_mul(x, y);
+    }
+    else if (LIKELY(rb_method_basic_definition_p(CLASS_OF(x), idMULT))) {
         if (y == ONE) return x;
     }
     return rb_funcall(x, '*', 1, y);
@@ -142,7 +153,7 @@ inline static VALUE
 f_sub(VALUE x, VALUE y)
 {
     if (FIXNUM_ZERO_P(y) &&
-        UNLIKELY(rb_method_basic_definition_p(CLASS_OF(x), idMINUS))) {
+        LIKELY(rb_method_basic_definition_p(CLASS_OF(x), idMINUS))) {
 	return x;
     }
     return rb_funcall(x, '-', 1, y);
@@ -221,7 +232,10 @@ f_negative_p(VALUE x)
 inline static int
 f_zero_p(VALUE x)
 {
-    if (RB_INTEGER_TYPE_P(x)) {
+    if (RB_FLOAT_TYPE_P(x)) {
+        return FLOAT_ZERO_P(x);
+    }
+    else if (RB_INTEGER_TYPE_P(x)) {
         return FIXNUM_ZERO_P(x);
     }
     else if (RB_TYPE_P(x, T_RATIONAL)) {
@@ -419,7 +433,7 @@ static VALUE nucomp_s_convert(int argc, VALUE *argv, VALUE klass);
 
 /*
  * call-seq:
- *    Complex(x[, y], exception: false)  ->  numeric
+ *    Complex(x[, y], exception: true)  ->  numeric or nil
  *
  * Returns x+i*y;
  *
@@ -832,10 +846,11 @@ f_divide(VALUE self, VALUE other,
     }
     if (k_numeric_p(other) && f_real_p(other)) {
 	get_dat1(self);
-
-	return f_complex_new2(CLASS_OF(self),
-			      (*func)(dat->real, other),
-			      (*func)(dat->imag, other));
+        return f_complex_new2(CLASS_OF(self),
+                              rb_rational_canonicalize(
+                                  (*func)(dat->real, other)),
+                              rb_rational_canonicalize(
+                                  (*func)(dat->imag, other)));
     }
     return rb_num_coerce_bin(self, other, id);
 }

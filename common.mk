@@ -1153,6 +1153,7 @@ bisect-ruby: PHONY
 	$(srcdir)/tool/bisect.sh ruby $(srcdir)
 
 COMPARE_RUBY = $(BASERUBY)
+BENCH_RUBY = $(MINIRUBY)
 ITEM =
 ARGS = $$(find $(srcdir)/benchmark -maxdepth 1 -name '*$(ITEM)*.yml' -o -name '*$(ITEM)*.rb' | sort)
 OPTS =
@@ -1165,7 +1166,7 @@ OPTS =
 benchmark: miniruby$(EXEEXT) update-benchmark-driver PHONY
 	$(BASERUBY) -rrubygems -I$(srcdir)/benchmark/lib $(srcdir)/benchmark/benchmark-driver/exe/benchmark-driver \
 	            --executables="compare-ruby::$(COMPARE_RUBY) -I$(EXTOUT)/common --disable-gem" \
-	            --executables="built-ruby::$(MINIRUBY) -r$(srcdir)/prelude --disable-gem" \
+	            --executables="built-ruby::$(BENCH_RUBY) -r$(srcdir)/prelude --disable-gem" \
 	            $(ARGS) $(OPTS)
 
 run.gdb:
@@ -1301,6 +1302,9 @@ UNICODE_PROPERTY_FILES =  \
 		$(UNICODE_SRC_DATA_DIR)/PropertyAliases.txt \
 		$(UNICODE_SRC_DATA_DIR)/PropertyValueAliases.txt \
 		$(UNICODE_SRC_DATA_DIR)/Scripts.txt \
+		$(empty)
+
+UNICODE_AUXILIARY_FILES =  \
 		$(UNICODE_SRC_DATA_DIR)/auxiliary/GraphemeBreakProperty.txt \
 		$(UNICODE_SRC_DATA_DIR)/auxiliary/GraphemeBreakTest.txt \
 		$(empty)
@@ -1323,6 +1327,13 @@ UNICODE_DOWNLOAD = \
 	    -d $(UNICODE_SRC_DATA_DIR) \
 	    -p $(UNICODE_VERSION)/ucd \
 	    -e $(ALWAYS_UPDATE_UNICODE:yes=-a) unicode
+UNICODE_AUXILIARY_DOWNLOAD = \
+	$(BASERUBY) $(srcdir)/tool/downloader.rb \
+	    --cache-dir=$(CACHE_DIR) \
+	    --unicode-beta $(UNICODE_BETA) \
+	    -d $(UNICODE_SRC_DATA_DIR)/auxiliary \
+	    -p $(UNICODE_VERSION)/ucd/auxiliary \
+	    -e $(ALWAYS_UPDATE_UNICODE:yes=-a) unicode
 UNICODE_EMOJI_DOWNLOAD = \
 	$(BASERUBY) $(srcdir)/tool/downloader.rb \
 	    --cache-dir=$(CACHE_DIR) \
@@ -1334,8 +1345,10 @@ UNICODE_EMOJI_DOWNLOAD = \
 $(UNICODE_PROPERTY_FILES): update-unicode-property-files
 update-unicode-property-files:
 	$(ECHO) Downloading Unicode $(UNICODE_VERSION) property files...
-	$(Q) $(MAKEDIRS) "$(UNICODE_SRC_DATA_DIR)/auxiliary"
 	$(Q) $(UNICODE_DOWNLOAD) $(UNICODE_PROPERTY_FILES)
+	$(ECHO) Downloading Unicode $(UNICODE_VERSION) auxiliary files...
+	$(Q) $(MAKEDIRS) "$(UNICODE_SRC_DATA_DIR)/auxiliary"
+	$(Q) $(UNICODE_AUXILIARY_DOWNLOAD) $(UNICODE_AUXILIARY_FILES)
 	$(ECHO) Downloading Unicode emoji $(UNICODE_EMOJI_VERSION) files...
 	$(Q) $(MAKEDIRS) "$(UNICODE_SRC_EMOJI_DATA_DIR)"
 	$(Q) $(UNICODE_EMOJI_DOWNLOAD) $(UNICODE_EMOJI_FILES)

@@ -481,7 +481,6 @@ AS_CASE(["$GCC:${warnflags+set}:${extra_warnflags:+set}:"],
 	particular_werror_flags=no
     ])
     for wflag in \
-		 -Werror=declaration-after-statement \
 		 -Werror=deprecated-declarations \
 		 -Werror=division-by-zero \
 		 -Werror=duplicated-cond \
@@ -489,7 +488,6 @@ AS_CASE(["$GCC:${warnflags+set}:${extra_warnflags:+set}:"],
 		 -Werror=implicit-int \
 		 -Werror=misleading-indentation \
 		 -Werror=pointer-arith \
-		 -Werror=restrict \
 		 -Werror=shorten-64-to-32 \
 		 -Werror=write-strings \
 		 -Wimplicit-fallthrough=0 \
@@ -1097,7 +1095,8 @@ AS_IF([test "x$with_jemalloc" != xno],[
     [test x$with_jemalloc = xyes && with_jemalloc=no])
   AC_CHECK_HEADER(jemalloc/jemalloc.h, [
     AC_DEFINE(RUBY_ALTERNATIVE_MALLOC_HEADER, [<jemalloc/jemalloc.h>])
-  ])
+  ],
+  [test x$with_jemalloc = xyes && with_jemalloc=no])
   AS_IF([test "x$with_jemalloc" != xyes], [
     AC_CACHE_CHECK([for jemalloc with JEMALLOC_MANGLE], rb_cv_jemalloc_demangle,
       [AC_LINK_IFELSE([AC_LANG_PROGRAM([@%:@define JEMALLOC_MANGLE 1

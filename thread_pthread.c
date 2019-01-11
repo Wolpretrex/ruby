@@ -1542,6 +1542,11 @@ rb_thread_wakeup_timer_thread(int sig)
             if (ec) {
                 RUBY_VM_SET_TRAP_INTERRUPT(ec);
                 ubf_timer_arm(current);
+
+                /* some ubfs can interrupt single-threaded process directly */
+                if (vm->ubf_async_safe && mth->unblock.func) {
+                    (mth->unblock.func)(mth->unblock.arg);
+                }
             }
         }
     }
@@ -2206,4 +2211,23 @@ timer_pthread_fn(void *p)
     return 0;
 }
 #endif /* UBF_TIMER_PTHREAD */
+
+static VALUE
+ubf_caller(const void *ignore)
+{
+    rb_thread_sleep_forever();
+
+    return Qfalse;
+}
+
+/*
+ * Called if and only if one thread is running, and
+ * the unblock function is NOT async-signal-safe
+ * This assumes USE_THREAD_CACHE is true for performance reasons
+ */
+static VALUE
+rb_thread_start_unblock_thread(void)
+{
+    return rb_thread_create(ubf_caller, 0);
+}
 #endif /* THREAD_SYSTEM_DEPENDENT_IMPLEMENTATION */

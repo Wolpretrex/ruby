@@ -23,18 +23,8 @@ extern "C" {
 
 #ifdef HAVE_STDBOOL_H
 # include <stdbool.h>
-#endif
-
-#ifndef __bool_true_false_are_defined
-# ifndef __cplusplus
-#  undef bool
-#  undef false
-#  undef true
-#  define bool signed char
-#  define false 0
-#  define true 1
-#  define __bool_true_false_are_defined 1
-# endif
+#else
+# include "missing/stdbool.h"
 #endif
 
 /* The most significant bit of the lower part of half-long integer.
@@ -1605,15 +1595,15 @@ VALUE rb_math_sqrt(VALUE);
 /* mjit.c */
 
 #if USE_MJIT
-extern int mjit_enabled;
-VALUE mjit_pause(int wait_p);
+extern bool mjit_enabled;
+VALUE mjit_pause(bool wait_p);
 VALUE mjit_resume(void);
-void mjit_finish(int close_handle_p);
+void mjit_finish(bool close_handle_p);
 #else
 #define mjit_enabled 0
-static inline VALUE mjit_pause(int wait_p){ return Qnil; } /* unreachable */
-static inline VALUE mjit_resume(void){ return Qnil; } /* unreachable */
-static inline void mjit_finish(int close_handle_p){}
+static inline VALUE mjit_pause(bool wait_p){ return Qnil; } // unreachable
+static inline VALUE mjit_resume(void){ return Qnil; } // unreachable
+static inline void mjit_finish(bool close_handle_p){}
 #endif
 
 /* newline.c */
@@ -1626,6 +1616,8 @@ void Init_newline(void);
 #define FIXNUM_ZERO_P(num) ((num) == INT2FIX(0))
 
 #define INT_NEGATIVE_P(x) (FIXNUM_P(x) ? FIXNUM_NEGATIVE_P(x) : BIGNUM_NEGATIVE_P(x))
+
+#define FLOAT_ZERO_P(x) (RFLOAT_VALUE(x) == 0.0)
 
 #ifndef ROUND_DEFAULT
 # define ROUND_DEFAULT RUBY_NUM_ROUND_HALF_UP
@@ -1658,6 +1650,7 @@ VALUE rb_int_plus(VALUE x, VALUE y);
 VALUE rb_float_plus(VALUE x, VALUE y);
 VALUE rb_int_minus(VALUE x, VALUE y);
 VALUE rb_int_mul(VALUE x, VALUE y);
+VALUE rb_float_mul(VALUE x, VALUE y);
 VALUE rb_int_idiv(VALUE x, VALUE y);
 VALUE rb_int_modulo(VALUE x, VALUE y);
 VALUE rb_int_round(VALUE num, int ndigits, enum ruby_num_rounding_mode mode);
@@ -1949,6 +1942,7 @@ void rb_last_status_clear(void);
 VALUE rb_rational_canonicalize(VALUE x);
 VALUE rb_rational_uminus(VALUE self);
 VALUE rb_rational_plus(VALUE self, VALUE other);
+VALUE rb_rational_mul(VALUE self, VALUE other);
 VALUE rb_lcm(VALUE x, VALUE y);
 VALUE rb_rational_reciprocal(VALUE x);
 VALUE rb_cstr_to_rat(const char *, int);
@@ -2029,6 +2023,7 @@ VALUE rb_sym_to_proc(VALUE sym);
 char *rb_str_to_cstr(VALUE str);
 VALUE rb_str_eql(VALUE str1, VALUE str2);
 VALUE rb_obj_as_string_result(VALUE str, VALUE obj);
+const char *ruby_escaped_char(int c);
 
 /* symbol.c */
 #ifdef RUBY_ENCODING_H

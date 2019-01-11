@@ -529,8 +529,8 @@ static VALUE nurat_s_convert(int argc, VALUE *argv, VALUE klass);
 
 /*
  * call-seq:
- *    Rational(x, y, exception: true)  ->  rational
- *    Rational(arg, exception: true)   ->  rational
+ *    Rational(x, y, exception: true)  ->  rational or nil
+ *    Rational(arg, exception: true)   ->  rational or nil
  *
  * Returns +x/y+ or +arg+ as a Rational.
  *
@@ -877,8 +877,8 @@ f_muldiv(VALUE self, VALUE anum, VALUE aden, VALUE bnum, VALUE bden, int k)
  *    Rational(9, 8)  * 4                #=> (9/2)
  *    Rational(20, 9) * 9.8              #=> 21.77777777777778
  */
-static VALUE
-nurat_mul(VALUE self, VALUE other)
+VALUE
+rb_rational_mul(VALUE self, VALUE other)
 {
     if (RB_INTEGER_TYPE_P(other)) {
 	{
@@ -1396,7 +1396,7 @@ f_round_common(int argc, VALUE *argv, VALUE self, VALUE (*func)(VALUE))
 	rb_raise(rb_eTypeError, "not an integer");
 
     b = f_expt10(n);
-    s = nurat_mul(self, b);
+    s = rb_rational_mul(self, b);
 
     if (k_float_p(s)) {
 	if (INT_NEGATIVE_P(n))
@@ -2472,8 +2472,6 @@ parse_rat(const char *s, const char *const e, int strict, int raise)
     return num;
 }
 
-#define FLOAT_ZERO_P(x) (rb_float_value(x) == 0.0)
-
 static VALUE
 string_to_r_strict(VALUE self, int raise)
 {
@@ -2734,7 +2732,7 @@ Init_Rational(void)
     rb_define_method(rb_cRational, "-@", rb_rational_uminus, 0);
     rb_define_method(rb_cRational, "+", rb_rational_plus, 1);
     rb_define_method(rb_cRational, "-", nurat_sub, 1);
-    rb_define_method(rb_cRational, "*", nurat_mul, 1);
+    rb_define_method(rb_cRational, "*", rb_rational_mul, 1);
     rb_define_method(rb_cRational, "/", nurat_div, 1);
     rb_define_method(rb_cRational, "quo", nurat_div, 1);
     rb_define_method(rb_cRational, "fdiv", nurat_fdiv, 1);

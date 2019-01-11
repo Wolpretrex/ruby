@@ -1421,27 +1421,43 @@ blocking_region_end(rb_thread_t *th, struct rb_blocking_region_buffer *region)
     }
 }
 
-static void *
-call_without_gvl(void *(*func)(void *), void *data1,
-		 rb_unblock_function_t *ubf, void *data2, int fail_if_interrupted)
+void *
+rb_nogvl(void *(*func)(void *), void *data1,
+         rb_unblock_function_t *ubf, void *data2,
+         int flags)
 {
     void *val = 0;
     rb_execution_context_t *ec = GET_EC();
     rb_thread_t *th = rb_ec_thread_ptr(ec);
     int saved_errno = 0;
+    VALUE ubf_th = Qfalse;
 
     if (ubf == RUBY_UBF_IO || ubf == RUBY_UBF_PROCESS) {
 	ubf = ubf_select;
 	data2 = th;
     }
+    else if (ubf && vm_living_thread_num(th->vm) == 1) {
+        if (RB_NOGVL_UBF_ASYNC_SAFE) {
+            th->vm->ubf_async_safe = 1;
+        }
+        else {
+            ubf_th = rb_thread_start_unblock_thread();
+        }
+    }
 
     BLOCKING_REGION(th, {
 	val = func(data1);
 	saved_errno = errno;
-    }, ubf, data2, fail_if_interrupted);
+    }, ubf, data2, flags & RB_NOGVL_INTR_FAIL);
 
-    if (!fail_if_interrupted) {
+    th->vm->ubf_async_safe = 0;
+
+    if ((flags & RB_NOGVL_INTR_FAIL) == 0) {
 	RUBY_VM_CHECK_INTS_BLOCKING(ec);
+    }
+
+    if (ubf_th != Qfalse) {
+        thread_value(rb_thread_kill(ubf_th));
     }
 
     errno = saved_errno;
@@ -1538,14 +1554,14 @@ void *
 rb_thread_call_without_gvl2(void *(*func)(void *), void *data1,
 			    rb_unblock_function_t *ubf, void *data2)
 {
-    return call_without_gvl(func, data1, ubf, data2, TRUE);
+    return rb_nogvl(func, data1, ubf, data2, RB_NOGVL_INTR_FAIL);
 }
 
 void *
 rb_thread_call_without_gvl(void *(*func)(void *data), void *data1,
 			    rb_unblock_function_t *ubf, void *data2)
 {
-    return call_without_gvl(func, data1, ubf, data2, FALSE);
+    return rb_nogvl(func, data1, ubf, data2, 0);
 }
 
 VALUE
