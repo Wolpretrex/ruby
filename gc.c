@@ -7843,12 +7843,12 @@ rb_gc_compact(VALUE mod)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    /* Drain interrupts so that THEAP has a chance to evacuate before
-     * any possible compaction. */
-    RUBY_VM_CHECK_INTS(GET_EC());
-
     /* Ensure objects are pinned */
     rb_gc();
+
+    /* Drain interrupts so that THEAP has a chance to evacuate before
+     * any possible compaction. */
+    rb_thread_execute_interrupts(rb_thread_current());
 
     gc_compact_heap(objspace);
 
