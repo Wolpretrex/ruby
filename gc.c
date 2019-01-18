@@ -7533,6 +7533,7 @@ gc_ref_update_imemo(rb_objspace_t *objspace, VALUE obj)
 	    break;
 	case imemo_ast:
 	case imemo_parser_strterm:
+	case imemo_tmpbuf:
 	    break;
 	default:
 	    rb_bug("not reachable %d", imemo_type(obj));
