@@ -202,9 +202,9 @@ static rb_nativethread_cond_t mjit_gc_wakeup;
 static bool in_gc;
 // True when JIT is working.
 static bool in_jit;
-// Set to TRUE to stop worker.
+// Set to true to stop worker.
 static bool stop_worker_p;
-// Set to TRUE if worker is stopped.
+// Set to true if worker is stopped.
 static bool worker_stopped;
 
 /* Path of "/tmp", which can be changed to $TMP in MinGW. */
@@ -247,6 +247,14 @@ static char *libruby_pathflag;
 # define MJIT_CFLAGS_PIPE 0
 #endif
 
+// Use `-nodefaultlibs -nostdlib` for GCC where possible, which does not work on mingw, cygwin and AIX.
+// This seems to improve MJIT performance on GCC.
+#if defined __GNUC__ && !defined __clang__ && !defined(_WIN32) && !defined(__CYGWIN__) && !defined(_AIX)
+# define GCC_NOSTDLIB_FLAGS "-nodefaultlibs", "-nostdlib",
+#else
+# define GCC_NOSTDLIB_FLAGS /* empty */
+#endif
+
 static const char *const CC_COMMON_ARGS[] = {
     MJIT_CC_COMMON MJIT_CFLAGS GCC_PIC_FLAGS
     NULL
@@ -260,22 +268,19 @@ static const char *const CC_DLDFLAGS_ARGS[] = {
     MJIT_DLDFLAGS
 #if defined __GNUC__ && !defined __clang__
     "-nostartfiles",
-# if !defined(_WIN32) && !defined(__CYGWIN__) && !defined(_AIX)
-    "-nodefaultlibs", "-nostdlib",
-# endif
 #endif
-    NULL
+    GCC_NOSTDLIB_FLAGS NULL
 };
 
 static const char *const CC_LIBS[] = {
 #if defined(_WIN32) || defined(__CYGWIN__)
-    MJIT_LIBS
-# if defined __GNUC__ && !defined __clang__
-#  if defined(_WIN32)
-    "-lmsvcrt",
-#  endif
-    "-lgcc",
+    MJIT_LIBS // mswin, mingw, cygwin
+#endif
+#if defined __GNUC__ && !defined __clang__
+# if defined(_WIN32)
+    "-lmsvcrt", // mingw
 # endif
+    "-lgcc", // mingw, cygwin, and GCC platforms using `-nodefaultlibs -nostdlib`
 #endif
     NULL
 };
@@ -734,6 +739,9 @@ make_pch(void)
 # ifdef __clang__
         "-emit-pch",
 # endif
+        // -nodefaultlibs is a linker flag, but it may affect cc1 behavior on Gentoo, which should NOT be changed on pch:
+        // https://gitweb.gentoo.org/proj/gcc-patches.git/tree/7.3.0/gentoo/13_all_default-ssp-fix.patch
+        GCC_NOSTDLIB_FLAGS
         "-o", NULL, NULL,
         NULL,
     };

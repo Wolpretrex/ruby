@@ -41,18 +41,3 @@ ruby_version_is ""..."2.7" do
     end
   end
 end
-
-ruby_version_is "2.7" do
-  describe "Proc called with no block" do
-    def revivify
-      Proc.new
-    end
-
-    it "raises ArgumentError when called with no block" do
-      p = Proc.new {}
-      -> {
-        revivify(&p)
-      }.should
-    end
-  end
-end
