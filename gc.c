@@ -915,11 +915,13 @@ static inline void gc_prof_sweep_timer_stop(rb_objspace_t *);
 static inline void gc_prof_set_malloc_info(rb_objspace_t *);
 static inline void gc_prof_set_heap_info(rb_objspace_t *);
 
-#define UPDATE_IF_MOVED(_objspace, _thing) do { \
-    if (gc_object_moved_p(_objspace, _thing)) { \
-       (_thing) = (VALUE)RMOVED((_thing))->destination; \
+#define TYPED_UPDATE_IF_MOVED(_objspace, _type, _thing) do { \
+    if (gc_object_moved_p(_objspace, (VALUE)_thing)) { \
+       (_thing) = (_type)RMOVED((_thing))->destination; \
     } \
 } while (0)
+
+#define UPDATE_IF_MOVED(_objspace, _thing) TYPED_UPDATE_IF_MOVED(_objspace, VALUE, _thing)
 
 #define gc_prof_record(objspace) (objspace)->profile.current_record
 #define gc_prof_enabled(objspace) ((objspace)->profile.run && (objspace)->profile.current_record)
@@ -2240,8 +2242,8 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 #ifdef GC_COMPACT_DEBUG
 	fprintf(stderr, "Collecting %p -> %p\n", obj, obj_id_to_ref(id));
 #endif
-	st_delete(obj_to_id_tbl, (st_data_t)&obj, 0);
-	st_delete(id_to_obj_tbl, (st_data_t)&id, 0);
+	st_delete(obj_to_id_tbl, (st_data_t *)&obj, 0);
+	st_delete(id_to_obj_tbl, (st_data_t *)&id, 0);
     }
 
 #if USE_RGENGC
@@ -7186,7 +7188,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     CLEAR_IN_BITMAP(GET_HEAP_MARKING_BITS((VALUE)src), (VALUE)src);
 
     if (FL_TEST(src, FL_EXIVAR)) {
-	rb_mv_generic_ivar(src, dest);
+	rb_mv_generic_ivar((VALUE)src, (VALUE)dest);
     }
 
     VALUE id;
@@ -7194,9 +7196,9 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
 #ifdef GC_COMPACT_DEBUG
 	fprintf(stderr, "Moving insert: %p -> %p\n", src, dest);
 #endif
-	st_delete(obj_to_id_tbl, (VALUE)&src, 0);
+	st_delete(obj_to_id_tbl, (st_data_t *)&src, 0);
 	st_insert(obj_to_id_tbl, (VALUE)dest, id);
-	st_update(id_to_obj_tbl, (st_data_t)id, update_id_to_obj, dest);
+	st_update(id_to_obj_tbl, (st_data_t)id, update_id_to_obj, (st_data_t)dest);
     }
 
     memcpy(dest, src, sizeof(RVALUE));
@@ -7371,7 +7373,7 @@ gc_ref_update_array(rb_objspace_t * objspace, VALUE v)
 
     len = RARRAY_LEN(v);
     if (len > 0) {
-	VALUE *ptr = RARRAY_CONST_PTR_TRANSIENT(v);
+	VALUE *ptr = (VALUE *)RARRAY_CONST_PTR_TRANSIENT(v);
 	for(i = 0; i < len; i++) {
 	    UPDATE_IF_MOVED(objspace, ptr[i]);
 	}
@@ -7460,9 +7462,9 @@ gc_ref_update_method_entry(rb_objspace_t *objspace, rb_method_entry_t *me)
 	switch (def->type) {
 	  case VM_METHOD_TYPE_ISEQ:
 	    if (def->body.iseq.iseqptr) {
-		UPDATE_IF_MOVED(objspace, def->body.iseq.iseqptr);
+		TYPED_UPDATE_IF_MOVED(objspace, rb_iseq_t *, def->body.iseq.iseqptr);
 	    }
-	    UPDATE_IF_MOVED(objspace, def->body.iseq.cref);
+	    TYPED_UPDATE_IF_MOVED(objspace, rb_cref_t *, def->body.iseq.cref);
 	    break;
 	  case VM_METHOD_TYPE_ATTRSET:
 	  case VM_METHOD_TYPE_IVAR:
@@ -7472,10 +7474,10 @@ gc_ref_update_method_entry(rb_objspace_t *objspace, rb_method_entry_t *me)
             UPDATE_IF_MOVED(objspace, def->body.bmethod.proc);
 	    break;
 	  case VM_METHOD_TYPE_ALIAS:
-	    UPDATE_IF_MOVED(objspace, def->body.alias.original_me);
+	    TYPED_UPDATE_IF_MOVED(objspace, struct rb_method_entry_struct *, def->body.alias.original_me);
 	    return;
 	  case VM_METHOD_TYPE_REFINED:
-	    UPDATE_IF_MOVED(objspace, def->body.refined.orig_me);
+	    TYPED_UPDATE_IF_MOVED(objspace, struct rb_method_entry_struct *, def->body.refined.orig_me);
 	    UPDATE_IF_MOVED(objspace, def->body.refined.owner);
 	    break;
 	  case VM_METHOD_TYPE_CFUNC:
@@ -7496,12 +7498,13 @@ gc_ref_update_imemo(rb_objspace_t *objspace, VALUE obj)
 	case imemo_env:
 	    {
 		rb_env_t *env = (rb_env_t *)obj;
-		UPDATE_IF_MOVED(objspace, env->iseq);
+		TYPED_UPDATE_IF_MOVED(objspace, rb_iseq_t *, env->iseq);
 	    }
+	    break;
 	    break;
 	case imemo_cref:
 	    UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.cref.klass);
-	    UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.cref.next);
+	    TYPED_UPDATE_IF_MOVED(objspace, struct rb_cref_struct *, RANY(obj)->as.imemo.cref.next);
 	    UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.cref.refinements);
 	    break;
 	case imemo_svar:
@@ -7515,13 +7518,13 @@ gc_ref_update_imemo(rb_objspace_t *objspace, VALUE obj)
 	    break;
 	case imemo_ifunc:
 	    if (is_pointer_to_heap(objspace, RANY(obj)->as.imemo.ifunc.data)) {
-		UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.ifunc.data);
+		TYPED_UPDATE_IF_MOVED(objspace, void *, RANY(obj)->as.imemo.ifunc.data);
 	    }
 	    break;
 	case imemo_memo:
 	    UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.memo.v1);
 	    UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.memo.v2);
-	    if (is_pointer_to_heap(objspace, RANY(obj)->as.imemo.memo.u3.value)) {
+	    if (is_pointer_to_heap(objspace, (void *)RANY(obj)->as.imemo.memo.u3.value)) {
 		UPDATE_IF_MOVED(objspace, RANY(obj)->as.imemo.memo.u3.value);
 	    }
 	    break;
@@ -10706,7 +10709,7 @@ rb_raw_obj_info(char *buff, const int buff_size, VALUE obj)
 	const int age = RVALUE_FLAGS_AGE(RBASIC(obj)->flags);
 
         if (is_pointer_to_heap(&rb_objspace, (void *)obj)) {
-            snprintf(buff, buff_size, "%p [%d%s%s%s%s] %s",
+            snprintf(buff, buff_size, "%p [%d%s%s%s%s%s] %s",
                      (void *)obj, age,
                      C(RVALUE_UNCOLLECTIBLE_BITMAP(obj),  "L"),
                      C(RVALUE_MARK_BITMAP(obj),           "M"),

@@ -228,10 +228,10 @@ rb_iseq_update_references(rb_iseq_t *iseq)
 	body->location.base_label = rb_gc_new_location(body->location.base_label);
 	body->location.pathobj = rb_gc_new_location(body->location.pathobj);
 	if (body->local_iseq) {
-	    body->local_iseq = rb_gc_new_location(body->local_iseq);
+	    body->local_iseq = (struct rb_iseq_struct *)rb_gc_new_location((VALUE)body->local_iseq);
 	}
 	if (body->parent_iseq) {
-	    body->parent_iseq = rb_gc_new_location((VALUE)body->parent_iseq);
+	    body->parent_iseq = (struct rb_iseq_struct *)rb_gc_new_location((VALUE)body->parent_iseq);
 	}
 	if(FL_TEST(iseq, ISEQ_MARKABLE_ISEQ)) {
 	    rb_iseq_each_value(iseq, update_each_insn_value, NULL);
@@ -257,7 +257,7 @@ rb_iseq_update_references(rb_iseq_t *iseq)
 		struct iseq_catch_table_entry *entry;
 		entry = &table->entries[i];
 		if (entry->iseq) {
-		    entry->iseq = rb_gc_new_location((VALUE)entry->iseq);
+		    entry->iseq = (rb_iseq_t *)rb_gc_new_location((VALUE)entry->iseq);
 		}
 	    }
 	}
