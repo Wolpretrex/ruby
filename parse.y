@@ -609,6 +609,9 @@ rb_strterm_mark(VALUE obj)
 }
 #endif
 
+#define yytnamerr(yyres, yystr) (YYSIZE_T)rb_yytnamerr(yyres, yystr)
+size_t rb_yytnamerr(char *yyres, const char *yystr);
+
 #define TOKEN2ID(tok) ( \
     tTOKEN_LOCAL_BEGIN<(tok)&&(tok)<tTOKEN_LOCAL_END ? TOKEN2LOCALID(tok) : \
     tTOKEN_INSTANCE_BEGIN<(tok)&&(tok)<tTOKEN_INSTANCE_END ? TOKEN2INSTANCEID(tok) : \
@@ -776,59 +779,71 @@ static void token_info_warn(struct parser_params *p, const char *token, token_in
 }
 
 %token <id>
-        keyword_class        "class"
-        keyword_module       "module"
-        keyword_def          "def"
-        keyword_undef        "undef"
-        keyword_begin        "begin"
-        keyword_rescue       "rescue"
-        keyword_ensure       "ensure"
-        keyword_end          "end"
-        keyword_if           "if"
-        keyword_unless       "unless"
-        keyword_then         "then"
-        keyword_elsif        "elsif"
-        keyword_else         "else"
-        keyword_case         "case"
-        keyword_when         "when"
-        keyword_while        "while"
-        keyword_until        "until"
-        keyword_for          "for"
-        keyword_break        "break"
-        keyword_next         "next"
-        keyword_redo         "redo"
-        keyword_retry        "retry"
-        keyword_in           "in"
-        keyword_do           "do"
-        keyword_do_cond      "do (for condition)"
-        keyword_do_block     "do (for block)"
-        keyword_do_LAMBDA    "do (for lambda)"
-        keyword_return       "return"
-        keyword_yield        "yield"
-        keyword_super        "super"
-        keyword_self         "self"
-        keyword_nil          "nil"
-        keyword_true         "true"
-        keyword_false        "false"
-        keyword_and          "and"
-        keyword_or           "or"
-        keyword_not          "not"
-        modifier_if          "if (modifier)"
-        modifier_unless      "unless (modifier)"
-        modifier_while       "while (modifier)"
-        modifier_until       "until (modifier)"
-        modifier_rescue      "rescue (modifier)"
-        keyword_alias        "alias"
-        keyword_defined      "defined?"
-        keyword_BEGIN        "BEGIN"
-        keyword_END          "END"
-        keyword__LINE__      "__LINE__"
-        keyword__FILE__      "__FILE__"
-        keyword__ENCODING__  "__ENCODING__"
+        keyword_class        "`class'"
+        keyword_module       "`module'"
+        keyword_def          "`def'"
+        keyword_undef        "`undef'"
+        keyword_begin        "`begin'"
+        keyword_rescue       "`rescue'"
+        keyword_ensure       "`ensure'"
+        keyword_end          "`end'"
+        keyword_if           "`if'"
+        keyword_unless       "`unless'"
+        keyword_then         "`then'"
+        keyword_elsif        "`elsif'"
+        keyword_else         "`else'"
+        keyword_case         "`case'"
+        keyword_when         "`when'"
+        keyword_while        "`while'"
+        keyword_until        "`until'"
+        keyword_for          "`for'"
+        keyword_break        "`break'"
+        keyword_next         "`next'"
+        keyword_redo         "`redo'"
+        keyword_retry        "`retry'"
+        keyword_in           "`in'"
+        keyword_do           "`do'"
+        keyword_do_cond      "`do' for condition"
+        keyword_do_block     "`do' for block"
+        keyword_do_LAMBDA    "`do' for lambda"
+        keyword_return       "`return'"
+        keyword_yield        "`yield'"
+        keyword_super        "`super'"
+        keyword_self         "`self'"
+        keyword_nil          "`nil'"
+        keyword_true         "`true'"
+        keyword_false        "`false'"
+        keyword_and          "`and'"
+        keyword_or           "`or'"
+        keyword_not          "`not'"
+        modifier_if          "`if' modifier"
+        modifier_unless      "`unless' modifier"
+        modifier_while       "`while' modifier"
+        modifier_until       "`until' modifier"
+        modifier_rescue      "`rescue' modifier"
+        keyword_alias        "`alias'"
+        keyword_defined      "`defined?'"
+        keyword_BEGIN        "`BEGIN'"
+        keyword_END          "`END'"
+        keyword__LINE__      "`__LINE__'"
+        keyword__FILE__      "`__FILE__'"
+        keyword__ENCODING__  "`__ENCODING__'"
 
-%token <id>   tIDENTIFIER tFID tGVAR tIVAR tCONSTANT tCVAR tLABEL
-%token <node> tINTEGER tFLOAT tRATIONAL tIMAGINARY tSTRING_CONTENT tCHAR
-%token <node> tNTH_REF tBACK_REF
+%token <id>   tIDENTIFIER    "local variable or method"
+%token <id>   tFID           "method"
+%token <id>   tGVAR          "global variable"
+%token <id>   tIVAR          "instance variable"
+%token <id>   tCONSTANT      "constant"
+%token <id>   tCVAR          "class variable"
+%token <id>   tLABEL
+%token <node> tINTEGER       "integer literal"
+%token <node> tFLOAT         "float literal"
+%token <node> tRATIONAL      "rational literal"
+%token <node> tIMAGINARY     "imaginary literal"
+%token <node> tCHAR          "char literal"
+%token <node> tNTH_REF       "numbered reference"
+%token <node> tBACK_REF      "back reference"
+%token <node> tSTRING_CONTENT "literal content"
 %token <num>  tREGEXP_END
 
 %type <node> singleton strings string string1 xstring regexp
@@ -888,7 +903,7 @@ static void token_info_warn(struct parser_params *p, const char *token, token_in
 %token <id> tCOLON2	RUBY_TOKEN(COLON2) "::"
 %token <id> tMETHREF	RUBY_TOKEN(METHREF) ".:"
 %token tCOLON3		":: at EXPR_BEG"
-%token <id> tOP_ASGN	/* +=, -=  etc. */
+%token <id> tOP_ASGN	"operator-assignment" /* +=, -=  etc. */
 %token tASSOC		"=>"
 %token tLPAREN		"("
 %token tLPAREN_ARG	"( arg"
@@ -902,8 +917,15 @@ static void token_info_warn(struct parser_params *p, const char *token, token_in
 %token tLAMBDA		"->"
 %token tSYMBEG		"symbol literal"
 %token tSTRING_BEG	"string literal"
-%token tXSTRING_BEG tREGEXP_BEG tWORDS_BEG tQWORDS_BEG tSYMBOLS_BEG tQSYMBOLS_BEG
-%token tSTRING_DBEG tSTRING_DEND tSTRING_DVAR tSTRING_END tLAMBEG tLABEL_END
+%token tXSTRING_BEG	"backtick literal"
+%token tREGEXP_BEG	"regexp literal"
+%token tWORDS_BEG	"word list"
+%token tQWORDS_BEG	"verbatim word list"
+%token tSYMBOLS_BEG	"symbol list"
+%token tQSYMBOLS_BEG	"verbatim symbol list"
+%token tSTRING_END	"terminator"
+%token tSTRING_DEND	"'}'"
+%token tSTRING_DBEG tSTRING_DVAR tLAMBEG tLABEL_END
 
 /*
  *	precedence table
@@ -4460,8 +4482,8 @@ static enum yytokentype here_document(struct parser_params*,rb_strterm_heredoc_t
   rb_parser_set_location(p, &_cur_loc);			\
   yylval.node = (x);					\
 }
-# define set_yylval_str(x) set_yylval_node(NEW_STR(x, &_cur_loc))
-# define set_yylval_literal(x) set_yylval_node(NEW_LIT(x, &_cur_loc))
+# define set_yylval_str(x) set_yylval_node(NEW_STR(add_mark_object(p, (x)), &_cur_loc))
+# define set_yylval_literal(x) set_yylval_node(NEW_LIT(add_mark_object(p, (x)), &_cur_loc))
 # define set_yylval_num(x) (yylval.num = (x))
 # define set_yylval_id(x)  (yylval.id = (x))
 # define set_yylval_name(x)  (yylval.id = (x))
@@ -4472,11 +4494,11 @@ ripper_yylval_id(struct parser_params *p, ID x)
 {
     return ripper_new_yylval(p, x, ID2SYM(x), 0);
 }
-# define set_yylval_str(x) (yylval.val = (x))
+# define set_yylval_str(x) (yylval.val = add_mark_object(p, (x)))
 # define set_yylval_num(x) (yylval.val = ripper_new_yylval(p, (x), 0, 0))
 # define set_yylval_id(x)  (void)(x)
 # define set_yylval_name(x) (void)(yylval.val = ripper_yylval_id(p, x))
-# define set_yylval_literal(x) (void)(x)
+# define set_yylval_literal(x) add_mark_object(p, (x))
 # define set_yylval_node(x) (void)(x)
 # define yylval_id() yylval.id
 # define _cur_loc NULL_LOC /* dummy */
@@ -5662,6 +5684,26 @@ parser_update_heredoc_indent(struct parser_params *p, int c)
     return FALSE;
 }
 
+static void
+parser_mixed_error(struct parser_params *p, rb_encoding *enc1, rb_encoding *enc2)
+{
+    static const char mixed_msg[] = "%s mixed within %s source";
+    const char *n1 = rb_enc_name(enc1), *n2 = rb_enc_name(enc2);
+    const size_t len = sizeof(mixed_msg) - 4 + strlen(n1) + strlen(n2);
+    char *errbuf = ALLOCA_N(char, len);
+    snprintf(errbuf, len, mixed_msg, n1, n2);
+    yyerror0(errbuf);
+}
+
+static void
+parser_mixed_escape(struct parser_params *p, const char *beg, rb_encoding *enc1, rb_encoding *enc2)
+{
+    const char *pos = p->lex.pcur;
+    p->lex.pcur = beg;
+    parser_mixed_error(p, enc1, enc2);
+    p->lex.pcur = pos;
+}
+
 static int
 tokadd_string(struct parser_params *p,
 	      int func, int term, int paren, long *nest,
@@ -5669,25 +5711,12 @@ tokadd_string(struct parser_params *p,
 {
     int c;
     rb_encoding *enc = 0;
-    char *errbuf = 0;
-    static const char mixed_msg[] = "%s mixed within %s source";
+    bool erred = false;
 
-#define mixed_error(enc1, enc2) if (!errbuf) {	\
-	size_t len = sizeof(mixed_msg) - 4;	\
-	len += strlen(rb_enc_name(enc1));	\
-	len += strlen(rb_enc_name(enc2));	\
-	errbuf = ALLOCA_N(char, len);		\
-	snprintf(errbuf, len, mixed_msg,	\
-		 rb_enc_name(enc1),		\
-		 rb_enc_name(enc2));		\
-	yyerror0(errbuf);			\
-    }
-#define mixed_escape(beg, enc1, enc2) do {	\
-	const char *pos = p->lex.pcur;		\
-	p->lex.pcur = (beg);			\
-	mixed_error((enc1), (enc2));		\
-	p->lex.pcur = pos;			\
-    } while (0)
+#define mixed_error(enc1, enc2) \
+    (void)(erred || (parser_mixed_error(p, enc1, enc2), erred = true))
+#define mixed_escape(beg, enc1, enc2) \
+    (void)(erred || (parser_mixed_escape(p, beg, enc1, enc2), erred = true))
 
     while ((c = nextc(p)) != -1) {
 	if (p->heredoc_indent > 0) {
@@ -5987,6 +6016,12 @@ parse_string(struct parser_params *p, rb_strterm_literal_t *quote)
 # define unterminated_literal(mesg) compile_error(p,  mesg)
 #endif
 	    literal_flush(p, p->lex.pcur);
+	    if (func & STR_FUNC_QWORDS) {
+		/* no content to add, bailing out here */
+		unterminated_literal("unterminated list meets end of file");
+		p->lex.strterm = 0;
+		return tSTRING_END;
+	    }
 	    if (func & STR_FUNC_REGEXP) {
 		unterminated_literal("unterminated regexp meets end of file");
 	    }
@@ -5998,7 +6033,7 @@ parse_string(struct parser_params *p, rb_strterm_literal_t *quote)
     }
 
     tokfix(p);
-    add_mark_object(p, lit = STR_NEW3(tok(p), toklen(p), enc, func));
+    lit = STR_NEW3(tok(p), toklen(p), enc, func);
     set_yylval_str(lit);
     flush_string_content(p, enc);
 
@@ -6303,7 +6338,6 @@ set_number_literal(struct parser_params *p, VALUE v,
 	type = tIMAGINARY;
     }
     set_yylval_literal(v);
-    add_mark_object(p, v);
     SET_LEX_STATE(EXPR_END);
     return type;
 }
@@ -6465,7 +6499,6 @@ here_document(struct parser_params *p, rb_strterm_heredoc_t *here)
 		str = STR_NEW3(tok(p), toklen(p), enc, func);
 	      flush_str:
 		set_yylval_str(str);
-		add_mark_object(p, str);
 #ifndef RIPPER
 		if (bol) yylval.node->flags |= NODE_FL_NEWLINE;
 #endif
@@ -6490,7 +6523,6 @@ here_document(struct parser_params *p, rb_strterm_heredoc_t *here)
     heredoc_restore(p, &p->lex.strterm->u.heredoc);
     p->lex.strterm = NEW_STRTERM(func | STR_FUNC_TERM, 0, 0);
     set_yylval_str(str);
-    add_mark_object(p, str);
 #ifndef RIPPER
     if (bol) yylval.node->flags |= NODE_FL_NEWLINE;
 #endif
@@ -7259,7 +7291,7 @@ parse_qmark(struct parser_params *p, int space_seen)
 	tokadd(p, c);
     }
     tokfix(p);
-    add_mark_object(p, lit = STR_NEW3(tok(p), toklen(p), enc, 0));
+    lit = STR_NEW3(tok(p), toklen(p), enc, 0);
     set_yylval_str(lit);
     SET_LEX_STATE(EXPR_END);
     return tCHAR;
@@ -11160,6 +11192,84 @@ parser_compile_error(struct parser_params *p, const char *fmt, ...)
 			       p->enc, fmt, ap);
     va_end(ap);
 }
+
+static size_t
+count_char(const char *str, int c)
+{
+    int n = 0;
+    while (str[n] == c) ++n;
+    return n;
+}
+
+/*
+ * strip enclosing double-quotes, same as the default yytnamerr except
+ * for that single-quotes matching back-quotes do not stop stripping.
+ *
+ *  "\"`class' keyword\"" => "`class' keyword"
+ */
+RUBY_FUNC_EXPORTED size_t
+rb_yytnamerr(char *yyres, const char *yystr)
+{
+    if (*yystr == '"') {
+	size_t yyn = 0, bquote = 0;
+	const char *yyp = yystr;
+
+	while (*++yyp) {
+	    switch (*yyp) {
+	      case '`':
+		if (!bquote) {
+		    bquote = count_char(yyp+1, '`') + 1;
+		    if (yyres) memcpy(&yyres[yyn], yyp, bquote);
+		    yyn += bquote;
+		    yyp += bquote - 1;
+		    break;
+		}
+		goto default_char;
+
+	      case '\'':
+		if (bquote && count_char(yyp+1, '\'') + 1 == bquote) {
+		    if (yyres) memcpy(yyres + yyn, yyp, bquote);
+		    yyn += bquote;
+		    yyp += bquote - 1;
+		    bquote = 0;
+		    break;
+		}
+		if (yyp[1] && yyp[1] != '\'' && yyp[2] == '\'') {
+		    if (yyres) memcpy(yyres + yyn, yyp, 3);
+		    yyn += 3;
+		    yyp += 2;
+		    break;
+		}
+		goto do_not_strip_quotes;
+
+	      case ',':
+		goto do_not_strip_quotes;
+
+	      case '\\':
+		if (*++yyp != '\\')
+		    goto do_not_strip_quotes;
+		/* Fall through.  */
+	      default_char:
+	      default:
+		if (yyres)
+		    yyres[yyn] = *yyp;
+		yyn++;
+		break;
+
+	      case '"':
+	      case '\0':
+		if (yyres)
+		    yyres[yyn] = '\0';
+		return yyn;
+	    }
+	}
+      do_not_strip_quotes: ;
+    }
+
+    if (!yyres) return strlen(yystr);
+
+    return (YYSIZE_T)(yystpcpy(yyres, yystr) - yyres);
+}
 #endif
 
 #ifdef RIPPER
@@ -11554,6 +11664,8 @@ Init_ripper(void)
     id_warn = rb_intern_const("warn");
     id_warning = rb_intern_const("warning");
     id_gets = rb_intern_const("gets");
+
+    (void)yystpcpy; /* may not used in newer bison */
 
     InitVM(ripper);
 }
