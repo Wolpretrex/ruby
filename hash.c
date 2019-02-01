@@ -147,6 +147,14 @@ rb_hash(VALUE obj)
 
 long rb_objid_hash(st_index_t index);
 
+static st_index_t
+dbl_to_index(double d)
+{
+    union {double d; st_index_t i;} u;
+    u.d = d;
+    return u.i;
+}
+
 long
 rb_dbl_long_hash(double d)
 {
@@ -155,12 +163,7 @@ rb_dbl_long_hash(double d)
 #if SIZEOF_INT == SIZEOF_VOIDP
     return rb_memhash(&d, sizeof(d));
 #else
-    {
-	union {double d; uint64_t i;} u;
-
-	u.d = d;
-	return rb_objid_hash(rb_hash_start(u.i));
-    }
+    return rb_objid_hash(dbl_to_index(d));
 #endif
 }
 
@@ -257,16 +260,19 @@ key64_hash(uint64_t key, uint32_t seed)
     return mult_and_mix(key + seed, prime1);
 }
 
+/* Should cast down the result for each purpose */
+#define st_index_hash(index) key64_hash(rb_hash_start(index), prime2)
+
 long
 rb_objid_hash(st_index_t index)
 {
-    return (long)key64_hash(rb_hash_start(index), prime2);
+    return (long)st_index_hash(index);
 }
 
 static st_index_t
 objid_hash(VALUE obj)
 {
-    return rb_objid_hash((st_index_t)obj);
+    return (st_index_t)st_index_hash((st_index_t)obj);
 }
 
 VALUE
@@ -293,13 +299,11 @@ rb_ident_hash(st_data_t n)
      *   many integers get interpreted as 2.0 or -2.0 [Bug #10761]
      */
     if (FLONUM_P(n)) {
-        union { double d; st_data_t i; } u;
-        u.d = rb_float_value(n);
-        n ^= u.i;
+        n ^= dbl_to_index(rb_float_value(n));
     }
 #endif
 
-    return (st_index_t)key64_hash(rb_hash_start((st_index_t)n), prime2);
+    return (st_index_t)st_index_hash((st_index_t)n);
 }
 
 static const struct st_hash_type identhash = {
