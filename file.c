@@ -495,7 +495,7 @@ get_stat(VALUE self)
     return st;
 }
 
-static struct timespec stat_mtimespec(struct stat *st);
+static struct timespec stat_mtimespec(const struct stat *st);
 
 /*
  *  call-seq:
@@ -820,7 +820,7 @@ rb_stat_blocks(VALUE self)
 }
 
 static struct timespec
-stat_atimespec(struct stat *st)
+stat_atimespec(const struct stat *st)
 {
     struct timespec ts;
     ts.tv_sec = st->st_atime;
@@ -837,14 +837,14 @@ stat_atimespec(struct stat *st)
 }
 
 static VALUE
-stat_atime(struct stat *st)
+stat_atime(const struct stat *st)
 {
     struct timespec ts = stat_atimespec(st);
     return rb_time_nano_new(ts.tv_sec, ts.tv_nsec);
 }
 
 static struct timespec
-stat_mtimespec(struct stat *st)
+stat_mtimespec(const struct stat *st)
 {
     struct timespec ts;
     ts.tv_sec = st->st_mtime;
@@ -861,14 +861,14 @@ stat_mtimespec(struct stat *st)
 }
 
 static VALUE
-stat_mtime(struct stat *st)
+stat_mtime(const struct stat *st)
 {
     struct timespec ts = stat_mtimespec(st);
     return rb_time_nano_new(ts.tv_sec, ts.tv_nsec);
 }
 
 static struct timespec
-stat_ctimespec(struct stat *st)
+stat_ctimespec(const struct stat *st)
 {
     struct timespec ts;
     ts.tv_sec = st->st_ctime;
@@ -885,7 +885,7 @@ stat_ctimespec(struct stat *st)
 }
 
 static VALUE
-stat_ctime(struct stat *st)
+stat_ctime(const struct stat *st)
 {
     struct timespec ts = stat_ctimespec(st);
     return rb_time_nano_new(ts.tv_sec, ts.tv_nsec);
@@ -893,13 +893,15 @@ stat_ctime(struct stat *st)
 
 #define HAVE_STAT_BIRTHTIME
 #if defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC)
+typedef struct stat statx_data;
 static VALUE
-stat_birthtime(struct stat *st)
+stat_birthtime(const struct stat *st)
 {
-    struct timespec *ts = &st->st_birthtimespec;
+    const struct timespec *ts = &st->st_birthtimespec;
     return rb_time_nano_new(ts->tv_sec, ts->tv_nsec);
 }
 #elif defined(_WIN32)
+typedef struct stat statx_data;
 # define stat_birthtime stat_ctime
 #else
 # undef HAVE_STAT_BIRTHTIME
@@ -1111,6 +1113,113 @@ stat_without_gvl(const char *path, struct stat *st)
     return (int)(VALUE)rb_thread_call_without_gvl(no_gvl_stat, &data,
 						  RUBY_UBF_IO, NULL);
 }
+
+#if !defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC) && \
+    defined(HAVE_STRUCT_STATX_STX_BTIME)
+
+# ifndef HAVE_STATX
+#   ifdef HAVE_SYSCALL_H
+#     include <syscall.h>
+#   elif defined HAVE_SYS_SYSCALL_H
+#     include <sys/syscall.h>
+#   endif
+#   if defined __linux__
+#     include <linux/stat.h>
+static inline int
+statx(int dirfd, const char *pathname, int flags,
+      unsigned int mask, struct statx *statxbuf)
+{
+    return (int)syscall(__NR_statx, dirfd, pathname, flags, mask, statxbuf);
+}
+#   endif
+# endif
+
+typedef struct no_gvl_statx_data {
+    struct statx *stx;
+    int fd;
+    const char *path;
+    int flags;
+    unsigned int mask;
+} no_gvl_statx_data;
+
+static VALUE
+io_blocking_statx(void *data)
+{
+    no_gvl_statx_data *arg = data;
+    return (VALUE)statx(arg->fd, arg->path, arg->flags, arg->mask, arg->stx);
+}
+
+static void *
+no_gvl_statx(void *data)
+{
+    return (void *)io_blocking_statx(data);
+}
+
+static int
+statx_without_gvl(const char *path, struct statx *stx, unsigned int mask)
+{
+    no_gvl_statx_data data = {stx, AT_FDCWD, path, 0, mask};
+
+    /* call statx(2) with pathname */
+    return (int)(VALUE)rb_thread_call_without_gvl(no_gvl_statx, &data,
+                                                  RUBY_UBF_IO, NULL);
+}
+
+static int
+fstatx_without_gvl(int fd, struct statx *stx, unsigned int mask)
+{
+    no_gvl_statx_data data = {stx, fd, "", AT_EMPTY_PATH, mask};
+
+    /* call statx(2) with fd */
+    return (int)rb_thread_io_blocking_region(io_blocking_statx, &data, fd);
+}
+
+static int
+rb_statx(VALUE file, struct statx *stx, unsigned int mask)
+{
+    VALUE tmp;
+    int result;
+
+    tmp = rb_check_convert_type_with_id(file, T_FILE, "IO", idTo_io);
+    if (!NIL_P(tmp)) {
+        rb_io_t *fptr;
+        GetOpenFile(tmp, fptr);
+        result = fstatx_without_gvl(fptr->fd, stx, mask);
+        file = tmp;
+    }
+    else {
+        FilePathValue(file);
+        file = rb_str_encode_ospath(file);
+        result = statx_without_gvl(RSTRING_PTR(file), stx, mask);
+    }
+    RB_GC_GUARD(file);
+    return result;
+}
+
+# define statx_has_birthtime(st) ((st)->stx_mask & STATX_BTIME)
+
+static VALUE
+statx_birthtime(const struct statx *stx, VALUE fname)
+{
+    if (!statx_has_birthtime(stx)) {
+        /* birthtime is not supported on the filesystem */
+        rb_syserr_fail_path(ENOSYS, fname);
+    }
+    return rb_time_nano_new(stx->stx_btime.tv_sec, stx->stx_btime.tv_nsec);
+}
+
+typedef struct statx statx_data;
+# define HAVE_STAT_BIRTHTIME
+
+#elif defined(HAVE_STAT_BIRTHTIME)
+# define statx_without_gvl(path, st, mask) stat_without_gvl(path, st)
+# define fstatx_without_gvl(fd, st, mask) fstat_without_gvl(fd, st)
+# define statx_birthtime(st, fname) stat_birthtime(st)
+# define statx_has_birthtime(st) 1
+# define rb_statx(file, st, mask) rb_stat(file, st)
+#else
+# define statx_has_birthtime(st) 0
+#endif
 
 static int
 rb_stat(VALUE file, struct stat *st)
@@ -2280,7 +2389,6 @@ rb_file_ctime(VALUE obj)
     return stat_ctime(&st);
 }
 
-#if defined(HAVE_STAT_BIRTHTIME)
 /*
  *  call-seq:
  *     File.birthtime(file_name)  -> time
@@ -2295,17 +2403,18 @@ rb_file_ctime(VALUE obj)
  *
  */
 
-static VALUE
+#if defined(HAVE_STAT_BIRTHTIME)
+RUBY_FUNC_EXPORTED VALUE
 rb_file_s_birthtime(VALUE klass, VALUE fname)
 {
-    struct stat st;
+    statx_data st;
 
-    if (rb_stat(fname, &st) < 0) {
+    if (rb_statx(fname, &st, STATX_BTIME) < 0) {
 	int e = errno;
 	FilePathValue(fname);
 	rb_syserr_fail_path(e, fname);
     }
-    return stat_birthtime(&st);
+    return statx_birthtime(&st, fname);
 }
 #else
 # define rb_file_s_birthtime rb_f_notimplement
@@ -2328,13 +2437,13 @@ static VALUE
 rb_file_birthtime(VALUE obj)
 {
     rb_io_t *fptr;
-    struct stat st;
+    statx_data st;
 
     GetOpenFile(obj, fptr);
-    if (fstat(fptr->fd, &st) == -1) {
+    if (fstatx_without_gvl(fptr->fd, &st, STATX_BTIME) == -1) {
 	rb_sys_fail_path(fptr->pathv);
     }
-    return stat_birthtime(&st);
+    return statx_birthtime(&st, fptr->pathv);
 }
 #else
 # define rb_file_birthtime rb_f_notimplement

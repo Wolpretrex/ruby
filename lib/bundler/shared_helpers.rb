@@ -276,7 +276,7 @@ module Bundler
           # avoid stepping above the tmp directory when testing
           gemspec = if ENV["BUNDLE_RUBY"] && ENV["BUNDLE_GEM"]
             # for Ruby Core
-            "lib/bundler.gemspec"
+            "lib/bundler/bundler.gemspec"
           else
             "bundler.gemspec"
           end
@@ -340,7 +340,7 @@ module Bundler
 
     def set_rubylib
       rubylib = (ENV["RUBYLIB"] || "").split(File::PATH_SEPARATOR)
-      rubylib.unshift bundler_ruby_lib
+      rubylib.unshift bundler_ruby_lib unless RbConfig::CONFIG["rubylibdir"] == bundler_ruby_lib
       Bundler::SharedHelpers.set_env "RUBYLIB", rubylib.uniq.join(File::PATH_SEPARATOR)
     end
 

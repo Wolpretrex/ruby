@@ -615,9 +615,11 @@ AS_IF([test "$GCC" = yes], [
     ],
     [cygwin*|darwin*|netbsd*], [
       # need lgamma_r(), finite()
-    ],
+    ])
+
+    # ANSI (no XCFLAGS because this is C only)
+    AS_CASE(["$target_os"],
     [solaris*], [
-      # ANSI (no XCFLAGS because this is C only)
       # Because "-std=gnu99" affects existance of functions on Solaris,
       # "-std=gnu99" will be appended to CPPFLAGS.
 	for ansi_options in -std=gnu99; do
@@ -939,9 +941,6 @@ main()
 		ac_cv_func_fsync=yes
 		ac_cv_func_seekdir=yes
 		ac_cv_func_telldir=yes
-		ac_cv_func_isinf=yes
-		ac_cv_func_isnan=yes
-		ac_cv_func_finite=yes
 		ac_cv_func_lchown=yes
 		ac_cv_func_link=yes
 		ac_cv_func_readlink=yes
@@ -992,9 +991,6 @@ main()
 [netbsd*], [	LIBS="-lm $LIBS"
 		],
 [dragonfly*], [	LIBS="-lm $LIBS"
-		# isinf() and isnan() are macros on DragonFly.
-		ac_cv_func_isinf=yes
-		ac_cv_func_isnan=yes
 		],
 [aix*],[	LIBS="-lm $LIBS"
 		ac_cv_func_round=no
@@ -1567,6 +1563,8 @@ AC_CHECK_MEMBERS([struct stat.st_ctim])
 AC_CHECK_MEMBERS([struct stat.st_ctimespec])
 AC_CHECK_MEMBERS([struct stat.st_ctimensec])
 AC_CHECK_MEMBERS([struct stat.st_birthtimespec])
+AS_IF([test "x$ac_cv_member_struct_stat_st_birthtimespec" != xyes],
+    [AC_CHECK_MEMBERS([struct statx.stx_btime])])
 
 AC_CHECK_TYPES([struct timeval], [], [], [@%:@ifdef HAVE_TIME_H
 @%:@include <time.h>
@@ -1719,11 +1717,8 @@ AC_REPLACE_FUNCS(dup2)
 AC_REPLACE_FUNCS(erf)
 AC_REPLACE_FUNCS(explicit_bzero)
 AC_REPLACE_FUNCS(ffs)
-AC_REPLACE_FUNCS(finite)
 AC_REPLACE_FUNCS(flock)
 AC_REPLACE_FUNCS(hypot)
-AC_REPLACE_FUNCS(isinf)
-AC_REPLACE_FUNCS(isnan)
 AC_REPLACE_FUNCS(lgamma_r)
 AC_REPLACE_FUNCS(memmove)
 AC_REPLACE_FUNCS(nan)
@@ -1735,6 +1730,10 @@ AC_REPLACE_FUNCS(strlcat)
 AC_REPLACE_FUNCS(strlcpy)
 AC_REPLACE_FUNCS(strstr)
 AC_REPLACE_FUNCS(tgamma)
+
+RUBY_REPLACE_FUNC([finite], [@%:@include <math.h>])
+RUBY_REPLACE_FUNC([isinf], [@%:@include <math.h>])
+RUBY_REPLACE_FUNC([isnan], [@%:@include <math.h>])
 
 # for missing/setproctitle.c
 AS_CASE(["$target_os"],
@@ -1755,33 +1754,6 @@ AS_IF([test "$rb_cv_have_signbit" = yes], [
 ], [
   AC_LIBOBJ([signbit])
 ])
-
-AC_CACHE_CHECK(for broken memmem, rb_cv_broken_memmem, [
-    AC_TRY_RUN([
-@%:@include <string.h>
-
-int
-main(int argc, char **argv)
-{
-    const char *str = "hogefugafoobar";
-    const char *rs = "foo";
-    const char *empty = "";
-    char *p;
-
-    p = memmem(str, strlen(str), rs, strlen(rs));
-    if (p == str+8) {
-	p = memmem(str, strlen(str), empty, strlen(empty));
-	if (p == str)
-	    return 0;
-    }
-    return 1;
-}
-    ],
-    rb_cv_broken_memmem=no,
-    rb_cv_broken_memmem=yes,
-    rb_cv_broken_memmem=yes)
-])
-test x"$rb_cv_broken_memmem" = xyes && ac_cv_func_memmem=no
 
 AC_FUNC_FORK
 
@@ -1829,6 +1801,7 @@ AC_CHECK_FUNCS(getpgid)
 AC_CHECK_FUNCS(getpgrp)
 AC_CHECK_FUNCS(getpriority)
 AC_CHECK_FUNCS(getpwnam_r)
+AC_CHECK_FUNCS(getrandom)
 AC_CHECK_FUNCS(getresgid)
 AC_CHECK_FUNCS(getresuid)
 AC_CHECK_FUNCS(getrlimit)
@@ -1913,6 +1886,9 @@ AC_CHECK_FUNCS(utimensat)
 AC_CHECK_FUNCS(utimes)
 AC_CHECK_FUNCS(wait4)
 AC_CHECK_FUNCS(waitpid)
+
+AS_IF([test "x$ac_cv_member_struct_statx_stx_btime" = xyes],
+    [AC_CHECK_FUNCS(statx)])
 
 AS_CASE(["$ac_cv_func_memset_s:$ac_cv_func_qsort_s"], [*yes*],
     [RUBY_DEFINE_IF([!defined __STDC_WANT_LIB_EXT1__], [__STDC_WANT_LIB_EXT1__], 1)])

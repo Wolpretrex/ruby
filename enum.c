@@ -612,6 +612,15 @@ enum_to_a(int argc, VALUE *argv, VALUE obj)
 }
 
 static VALUE
+enum_hashify(VALUE obj, int argc, const VALUE *argv, rb_block_call_func *iter)
+{
+    VALUE hash = rb_hash_new();
+    rb_block_call(obj, id_each, argc, argv, iter, hash);
+    OBJ_INFECT(hash, obj);
+    return hash;
+}
+
+static VALUE
 enum_to_h_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 {
     ENUM_WANT_SVALUE();
@@ -647,11 +656,8 @@ enum_to_h_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 static VALUE
 enum_to_h(int argc, VALUE *argv, VALUE obj)
 {
-    VALUE hash = rb_hash_new();
     rb_block_call_func *iter = rb_block_given_p() ? enum_to_h_ii : enum_to_h_i;
-    rb_block_call(obj, id_each, argc, argv, iter, hash);
-    OBJ_INFECT(hash, obj);
-    return hash;
+    return enum_hashify(obj, argc, argv, iter);
 }
 
 static VALUE
@@ -924,15 +930,51 @@ group_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 static VALUE
 enum_group_by(VALUE obj)
 {
-    VALUE hash;
-
     RETURN_SIZED_ENUMERATOR(obj, 0, 0, enum_size);
 
-    hash = rb_hash_new();
-    rb_block_call(obj, id_each, 0, 0, group_by_i, hash);
-    OBJ_INFECT(hash, obj);
+    return enum_hashify(obj, 0, 0, group_by_i);
+}
 
-    return hash;
+static void
+tally_up(VALUE hash, VALUE group)
+{
+    VALUE tally = rb_hash_aref(hash, group);
+    if (NIL_P(tally)) {
+        tally = INT2FIX(1);
+    }
+    else if (FIXNUM_P(tally) && tally < INT2FIX(FIXNUM_MAX)) {
+        tally += INT2FIX(1) & ~FIXNUM_FLAG;
+    }
+    else {
+        tally = rb_big_plus(tally, INT2FIX(1));
+    }
+    rb_hash_aset(hash, group, tally);
+}
+
+static VALUE
+tally_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
+{
+    ENUM_WANT_SVALUE();
+    tally_up(hash, i);
+    return Qnil;
+}
+
+/*
+ *  call-seq:
+ *     enum.tally -> a_hash
+ *
+ *  Tallys the collection.  Returns a hash where the keys are the
+ *  elements and the values are numbers of elements in the collection
+ *  that correspond to the key.
+ *
+ *     (1..6).tally   #=> {1=>1, 2=>1, 3=>1, 4=>1, 5=>1, 6=>1}
+ *
+ */
+
+static VALUE
+enum_tally(VALUE obj)
+{
+    return enum_hashify(obj, 0, 0, tally_i);
 }
 
 static VALUE
@@ -4070,6 +4112,7 @@ Init_Enumerable(void)
     rb_define_method(rb_mEnumerable, "reduce", enum_inject, -1);
     rb_define_method(rb_mEnumerable, "partition", enum_partition, 0);
     rb_define_method(rb_mEnumerable, "group_by", enum_group_by, 0);
+    rb_define_method(rb_mEnumerable, "tally", enum_tally, 0);
     rb_define_method(rb_mEnumerable, "first", enum_first, -1);
     rb_define_method(rb_mEnumerable, "all?", enum_all, -1);
     rb_define_method(rb_mEnumerable, "any?", enum_any, -1);

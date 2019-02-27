@@ -402,6 +402,7 @@ def package(vcs, rev, destdir, tmp = nil)
       status.scan(/^s([%,])@([A-Za-z_][A-Za-z_0-9]*)@\1(.*?)\1g$/) do
         vars[$2] ||= $3
       end
+      vars.delete("UNICODE_FILES") # for stable branches
       vars["UNICODE_VERSION"] = $unicode_version if $unicode_version
       args = vars.dup
       mk.gsub!(/@([A-Za-z_]\w*)@/) {args.delete($1); vars[$1] || ENV[$1]}
@@ -410,15 +411,11 @@ def package(vcs, rev, destdir, tmp = nil)
 
 prepare-package: prereq update-download clean-cache $(CLEAN_CACHE)
 clean-cache $(CLEAN_CACHE): after-update
-touch-unicode-files: _touch-unicode-files
-update-download:: touch-unicode-files
 update-download:: update-gems
 after-update:: extract-gems
 extract-gems: update-gems
 update-gems:
-_touch-unicode-files:
-	$(MAKEDIRS) $(UNICODE_SRC_DATA_DIR)
-	touch $(UNICODE_SRC_DATA_DIR)/.unicode-tables.time $(UNICODE_DATA_HEADERS)
+$(UNICODE_SRC_DATA_DIR)/.unicode-tables.time: update-unicode
       APPEND
       open(clean.add("Makefile"), "w") do |f|
         f.puts mk
