@@ -7121,8 +7121,6 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 	    return FALSE;
 	    break;
 	case T_STRING:
-	    return !STR_EMBED_P(obj);
-	    break;
 	case T_OBJECT:
 	case T_FLOAT:
 	case T_IMEMO:
