@@ -3375,7 +3375,6 @@ rb_obj_id(VALUE obj)
 #endif
 		rb_objspace_t *objspace = &rb_objspace;
 		objspace->profile.object_id_collisions++;
-		/* Fixnum LSB is always 1, so increment by 2 */
 		id += 40;
 	    } else {
 #ifdef GC_COMPACT_DEBUG
@@ -3386,16 +3385,7 @@ rb_obj_id(VALUE obj)
 		return id;
 	    }
 	}
-	rb_bug("Couldn't find an object id after 500 tries");
     }
-    /*
-    if (in obj id table) {
-	get ivar
-    } else {
-	put in table
-
-    }
-    */
     return nonspecial_obj_id(obj);
 }
 
@@ -7176,12 +7166,15 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     fprintf(stderr, "moving: %s -> ", obj_info(src));
 #endif
 
+    /* Save off bits for current object. */
     marked = rb_objspace_marked_object_p((VALUE)src);
     wb_unprotected = RVALUE_WB_UNPROTECTED((VALUE)src);
     uncollectible = RVALUE_UNCOLLECTIBLE((VALUE)src);
     marking = RVALUE_MARKING((VALUE)src);
 
     objspace->total_allocated_objects++;
+
+    /* Clear bits for eventual T_MOVED */
     CLEAR_IN_BITMAP(GET_HEAP_MARK_BITS((VALUE)src), (VALUE)src);
     CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS((VALUE)src), (VALUE)src);
     CLEAR_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS((VALUE)src), (VALUE)src);
@@ -7192,6 +7185,9 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     }
 
     VALUE id;
+
+    /* If the source object's object_id has been seen, we need to update
+     * the object to object id mapping. */
     if(st_lookup(obj_to_id_tbl, (VALUE)src, &id)) {
 #ifdef GC_COMPACT_DEBUG
 	fprintf(stderr, "Moving insert: %p -> %p\n", src, dest);
@@ -7201,9 +7197,11 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
 	st_update(id_to_obj_tbl, (st_data_t)id, update_id_to_obj, (st_data_t)dest);
     }
 
+    /* Move the object */
     memcpy(dest, src, sizeof(RVALUE));
     memset(src, 0, sizeof(RVALUE));
 
+    /* Set bits for object in new location */
     if (marking) {
 	MARK_IN_BITMAP(GET_HEAP_MARKING_BITS((VALUE)dest), (VALUE)dest);
     } else {
@@ -7228,6 +7226,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
 	CLEAR_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS((VALUE)dest), (VALUE)dest);
     }
 
+    /* Assign forwarding address */
     src->as.moved.flags = T_MOVED;
     src->as.moved.destination = (VALUE)dest;
 
@@ -7341,6 +7340,7 @@ gc_compact_heap(rb_objspace_t *objspace)
 
     init_cursors(objspace, &free_cursor, &scan_cursor, page_list);
 
+    /* Two finger algorithm */
     while (not_met(&free_cursor, &scan_cursor)) {
 	while(BUILTIN_TYPE(free_cursor.slot) != T_NONE && not_met(&free_cursor, &scan_cursor)) {
 	    advance_cursor(&free_cursor, page_list);
@@ -7554,6 +7554,8 @@ check_id_table_move(ID id, VALUE value, void *data)
     return ID_TABLE_CONTINUE;
 }
 
+/* Returns the new location of an object, if it moved.  Otherwise returns
+ * the existing location. */
 VALUE
 rb_gc_new_location(VALUE value)
 {
@@ -7687,7 +7689,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
 		UPDATE_IF_MOVED(objspace, any->as.string.as.heap.aux.shared);
 	    }
 	case T_DATA:
-	    /* Don't need to do anything */
+	    /* Call the compaction callback, if it exists */
 	    {
 		void *const ptr = DATA_PTR(obj);
 		if (ptr) {
