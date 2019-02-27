@@ -7333,8 +7333,8 @@ gc_compact_heap(rb_objspace_t *objspace)
     int number_considered;
     struct heap_page **page_list;
 
-    memset(objspace->rcompactor.considered_count_table, 0, T_MASK);
-    memset(objspace->rcompactor.moved_count_table, 0, T_MASK);
+    memset(objspace->rcompactor.considered_count_table, 0, T_MASK * sizeof(size_t));
+    memset(objspace->rcompactor.moved_count_table, 0, T_MASK * sizeof(size_t));
 
     page_list = calloc(heap_allocated_pages, sizeof(struct heap_page *));
     memcpy(page_list, heap_pages_sorted, heap_allocated_pages * sizeof(struct heap_page *));
