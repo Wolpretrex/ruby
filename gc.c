@@ -3534,6 +3534,43 @@ set_zero(st_data_t key, st_data_t val, st_data_t arg)
     return ST_CONTINUE;
 }
 
+static VALUE
+type_sym(int type)
+{
+    switch (type) {
+#define COUNT_TYPE(t) case (t): return ID2SYM(rb_intern(#t)); break;
+	COUNT_TYPE(T_NONE);
+	COUNT_TYPE(T_OBJECT);
+	COUNT_TYPE(T_CLASS);
+	COUNT_TYPE(T_MODULE);
+	COUNT_TYPE(T_FLOAT);
+	COUNT_TYPE(T_STRING);
+	COUNT_TYPE(T_REGEXP);
+	COUNT_TYPE(T_ARRAY);
+	COUNT_TYPE(T_HASH);
+	COUNT_TYPE(T_STRUCT);
+	COUNT_TYPE(T_BIGNUM);
+	COUNT_TYPE(T_FILE);
+	COUNT_TYPE(T_DATA);
+	COUNT_TYPE(T_MATCH);
+	COUNT_TYPE(T_COMPLEX);
+	COUNT_TYPE(T_RATIONAL);
+	COUNT_TYPE(T_NIL);
+	COUNT_TYPE(T_TRUE);
+	COUNT_TYPE(T_FALSE);
+	COUNT_TYPE(T_SYMBOL);
+	COUNT_TYPE(T_FIXNUM);
+	COUNT_TYPE(T_IMEMO);
+	COUNT_TYPE(T_UNDEF);
+	COUNT_TYPE(T_NODE);
+	COUNT_TYPE(T_ICLASS);
+	COUNT_TYPE(T_ZOMBIE);
+	COUNT_TYPE(T_MOVED);
+#undef COUNT_TYPE
+	default:              return INT2NUM(type); break;
+    }
+}
+
 /*
  *  call-seq:
  *     ObjectSpace.count_objects([result_hash]) -> hash
@@ -3615,37 +3652,7 @@ count_objects(int argc, VALUE *argv, VALUE os)
     rb_hash_aset(hash, ID2SYM(rb_intern("FREE")), SIZET2NUM(freed));
 
     for (i = 0; i <= T_MASK; i++) {
-        VALUE type;
-        switch (i) {
-#define COUNT_TYPE(t) case (t): type = ID2SYM(rb_intern(#t)); break;
-	    COUNT_TYPE(T_NONE);
-	    COUNT_TYPE(T_OBJECT);
-	    COUNT_TYPE(T_CLASS);
-	    COUNT_TYPE(T_MODULE);
-	    COUNT_TYPE(T_FLOAT);
-	    COUNT_TYPE(T_STRING);
-	    COUNT_TYPE(T_REGEXP);
-	    COUNT_TYPE(T_ARRAY);
-	    COUNT_TYPE(T_HASH);
-	    COUNT_TYPE(T_STRUCT);
-	    COUNT_TYPE(T_BIGNUM);
-	    COUNT_TYPE(T_FILE);
-	    COUNT_TYPE(T_DATA);
-	    COUNT_TYPE(T_MATCH);
-	    COUNT_TYPE(T_COMPLEX);
-	    COUNT_TYPE(T_RATIONAL);
-	    COUNT_TYPE(T_NIL);
-	    COUNT_TYPE(T_TRUE);
-	    COUNT_TYPE(T_FALSE);
-	    COUNT_TYPE(T_SYMBOL);
-	    COUNT_TYPE(T_FIXNUM);
-	    COUNT_TYPE(T_IMEMO);
-	    COUNT_TYPE(T_UNDEF);
-	    COUNT_TYPE(T_ICLASS);
-	    COUNT_TYPE(T_ZOMBIE);
-#undef COUNT_TYPE
-          default:              type = INT2NUM(i); break;
-        }
+        VALUE type = type_sym(i);
         if (counts[i])
             rb_hash_aset(hash, type, SIZET2NUM(counts[i]));
     }
@@ -10554,57 +10561,6 @@ gc_profile_disable(void)
 /*
   ------------------------------ DEBUG ------------------------------
 */
-
-/* Stolen from ko1's allocation_tracer gem */
-
-static VALUE
-type_sym(int type)
-{
-    static VALUE syms[T_MASK] = {0};
-
-    if (syms[0] == 0) {
-	int i;
-	for (i=0; i<T_MASK; i++) {
-	    switch (i) {
-#define TYPE_NAME(t) case (t): syms[i] = ID2SYM(rb_intern(#t)); break;
-		TYPE_NAME(T_NONE);
-		TYPE_NAME(T_OBJECT);
-		TYPE_NAME(T_CLASS);
-		TYPE_NAME(T_MODULE);
-		TYPE_NAME(T_FLOAT);
-		TYPE_NAME(T_STRING);
-		TYPE_NAME(T_REGEXP);
-		TYPE_NAME(T_ARRAY);
-		TYPE_NAME(T_HASH);
-		TYPE_NAME(T_STRUCT);
-		TYPE_NAME(T_BIGNUM);
-		TYPE_NAME(T_FILE);
-		TYPE_NAME(T_MATCH);
-		TYPE_NAME(T_COMPLEX);
-		TYPE_NAME(T_RATIONAL);
-		TYPE_NAME(T_NIL);
-		TYPE_NAME(T_TRUE);
-		TYPE_NAME(T_FALSE);
-		TYPE_NAME(T_SYMBOL);
-		TYPE_NAME(T_FIXNUM);
-		TYPE_NAME(T_UNDEF);
-#ifdef T_IMEMO /* introduced from Rub 2.3 */
-		TYPE_NAME(T_IMEMO);
-#endif
-		TYPE_NAME(T_NODE);
-		TYPE_NAME(T_ICLASS);
-		TYPE_NAME(T_ZOMBIE);
-		TYPE_NAME(T_DATA);
-	      default:
-		syms[i] = ID2SYM(rb_intern("unknown"));
-		break;
-#undef TYPE_NAME
-	    }
-	}
-    }
-
-    return syms[type];
-}
 
 static const char *
 type_name(int type, VALUE obj)
