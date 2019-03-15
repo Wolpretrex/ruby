@@ -22,13 +22,29 @@ sufficient information, see the ChangeLog file or Redmine
 
 * lambda with no block in a method called with a block errs.
 
+* Non-Symbol keys in a keyword arguments hash was prohibited at 2.6.0, but
+  now allowed again.  [Bug #15658]
+
 === Core classes updates (outstanding ones only)
 
 Enumerable::
 
   New method::
 
-   * Added Enumerable#tally.  [Feature #11076]
+    * Added Enumerable#tally.  [Feature #11076]
+
+Enumerator::
+
+  New method::
+
+    * Added Enumerator::Yielder#to_proc so that a Yielder object can be
+      directly passed to another method as a block argument.
+      \[Feature #15618]
+
+Regexp/String::
+
+    * Update Unicode version and Emoji version from 11.0.0 to 12.0.0.
+      \[Feature #15321]
 
 === Stdlib updates (outstanding ones only)
 
@@ -45,6 +61,10 @@ RSS::
 === Compatibility issues (excluding feature bug fixes)
 
 === Stdlib compatibility issues (excluding feature bug fixes)
+
+profile.rb, Profiler__::
+
+  * Removed from standard library. No one maintains it from Ruby 2.0.0.
 
 === C API updates
 

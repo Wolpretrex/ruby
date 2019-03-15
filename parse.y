@@ -71,6 +71,11 @@
     rb_parser_set_location_of_none(p, &(Current))
 #define RUBY_SET_YYLLOC(Current)					\
     rb_parser_set_location(p, &(Current))
+#define RUBY_INIT_YYLLOC() \
+    { \
+	{p->ruby_sourceline, (int)(p->lex.ptok - p->lex.pbeg)}, \
+	{p->ruby_sourceline, (int)(p->lex.pcur - p->lex.pbeg)}, \
+    }
 
 enum lex_state_bits {
     EXPR_BEG_bit,		/* ignore newline, +/- is a sign. */
@@ -315,6 +320,10 @@ static int parser_yyerror(struct parser_params*, const YYLTYPE *yylloc, const ch
 
 #define lambda_beginning_p() (p->lex.lpar_beg == p->lex.paren_nest)
 
+#ifndef RIPPER
+static const ID excessed_comma = 1;
+#endif
+
 static enum yytokentype yylex(YYSTYPE*, YYLTYPE*, struct parser_params*);
 
 #ifndef RIPPER
@@ -514,9 +523,9 @@ enum lex_state_e rb_parser_trace_lex_state(struct parser_params *, enum lex_stat
 VALUE rb_parser_lex_state_name(enum lex_state_e state);
 void rb_parser_show_bitstack(struct parser_params *, stack_type, const char *, int);
 PRINTF_ARGS(void rb_parser_fatal(struct parser_params *p, const char *fmt, ...), 2, 3);
-void rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_heredoc_t *here, YYLTYPE *yylloc);
-void rb_parser_set_location_of_none(struct parser_params *p, YYLTYPE *yylloc);
-void rb_parser_set_location(struct parser_params *p, YYLTYPE *yylloc);
+YYLTYPE *rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_heredoc_t *here, YYLTYPE *yylloc);
+YYLTYPE *rb_parser_set_location_of_none(struct parser_params *p, YYLTYPE *yylloc);
+YYLTYPE *rb_parser_set_location(struct parser_params *p, YYLTYPE *yylloc);
 RUBY_SYMBOL_EXPORT_END
 
 static void parser_token_value_print(struct parser_params *p, enum yytokentype type, const YYSTYPE *valp);
@@ -3050,7 +3059,6 @@ block_param	: f_arg ',' f_block_optarg ',' f_rest_arg opt_block_args_tail
 		    {
 		    /*%%%*/
 			/* magic number for rest_id in iseq_set_arguments() */
-			const ID excessed_comma = 1;
 			$$ = new_args(p, $1, Qnone, excessed_comma, Qnone, new_args_tail(p, Qnone, Qnone, Qnone, &@1), &@$);
 		    /*% %*/
 		    /*% ripper: new_args(p, $1, Qnone, excessed_comma!, Qnone, new_args_tail(p, Qnone, Qnone, Qnone, NULL), NULL) %*/
@@ -4656,81 +4664,110 @@ parser_precise_mbclen(struct parser_params *p, const char *ptr)
     return len;
 }
 
+#ifndef RIPPER
+static void ruby_show_error_line(VALUE errbuf, const YYLTYPE *yylloc, int lineno, VALUE str);
+
+static inline void
+parser_show_error_line(struct parser_params *p, const YYLTYPE *yylloc)
+{
+    ruby_show_error_line(p->error_buffer, yylloc, p->ruby_sourceline, p->lex.lastline);
+}
+
 static int
 parser_yyerror(struct parser_params *p, const YYLTYPE *yylloc, const char *msg)
 {
-#ifndef RIPPER
-    const int max_line_margin = 30;
-    const char *ptr, *ptr_end, *pt, *pb;
-    const char *pre = "", *post = "", *pend;
-    const char *code = "", *caret = "", *newline = "";
-    const char *lim;
-    char *buf;
-    long len;
-    int i;
     YYLTYPE current;
 
     if (!yylloc) {
-	RUBY_SET_YYLLOC(current);
-	yylloc = &current;
+	yylloc = RUBY_SET_YYLLOC(current);
     }
     else if ((p->ruby_sourceline != yylloc->beg_pos.lineno &&
 	      p->ruby_sourceline != yylloc->end_pos.lineno) ||
 	     (yylloc->beg_pos.lineno == yylloc->end_pos.lineno &&
 	      yylloc->beg_pos.column == yylloc->end_pos.column)) {
-	compile_error(p, "%s", msg);
-	return 0;
+	yylloc = 0;
+    }
+    compile_error(p, "%s", msg);
+    parser_show_error_line(p, yylloc);
+    return 0;
+}
+
+static void
+ruby_show_error_line(VALUE errbuf, const YYLTYPE *yylloc, int lineno, VALUE str)
+{
+    VALUE mesg;
+    const int max_line_margin = 30;
+    const char *ptr, *ptr_end, *pt, *pb;
+    const char *pre = "", *post = "", *pend;
+    const char *code = "", *caret = "";
+    const char *lim;
+    const char *const pbeg = RSTRING_PTR(str);
+    char *buf;
+    long len;
+    int i;
+
+    if (!yylloc) return;
+    pend = RSTRING_END(str);
+    if (pend > pbeg && pend[-1] == '\n') {
+	if (--pend > pbeg && pend[-1] == '\r') --pend;
     }
 
-    pend = p->lex.pend;
-    if (pend > p->lex.pbeg && pend[-1] == '\n') {
-	if (--pend > p->lex.pbeg && pend[-1] == '\r') --pend;
+    pt = pend;
+    if (lineno == yylloc->end_pos.lineno &&
+	(pend - pbeg) > yylloc->end_pos.column) {
+	pt = pbeg + yylloc->end_pos.column;
     }
 
-    pt = (p->ruby_sourceline == yylloc->end_pos.lineno) ?
-	    p->lex.pbeg + yylloc->end_pos.column : p->lex.pend;
-    if ((p->lex.pbeg < pt) && (*(pt-1) == '\n')) pt--;
-    ptr = ptr_end = pt < pend ? pt : pend;
-    lim = ptr - p->lex.pbeg > max_line_margin ? ptr - max_line_margin : p->lex.pbeg;
+    ptr = ptr_end = pt;
+    lim = ptr - pbeg > max_line_margin ? ptr - max_line_margin : pbeg;
     while ((lim < ptr) && (*(ptr-1) != '\n')) ptr--;
 
     lim = pend - ptr_end > max_line_margin ? ptr_end + max_line_margin : pend;
-    while ((ptr_end < lim) && (*ptr_end != '\n')) ptr_end++;
+    while ((ptr_end < lim) && (*ptr_end != '\n') && (*ptr_end != '\r')) ptr_end++;
 
     len = ptr_end - ptr;
     if (len > 4) {
-	if (ptr > p->lex.pbeg) {
-	    ptr = rb_enc_prev_char(p->lex.pbeg, ptr, pt, rb_enc_get(p->lex.lastline));
-	    if (ptr > p->lex.pbeg) pre = "...";
+	if (ptr > pbeg) {
+	    ptr = rb_enc_prev_char(pbeg, ptr, pt, rb_enc_get(str));
+	    if (ptr > pbeg) pre = "...";
 	}
 	if (ptr_end < pend) {
-	    ptr_end = rb_enc_prev_char(pt, ptr_end, pend, rb_enc_get(p->lex.lastline));
+	    ptr_end = rb_enc_prev_char(pt, ptr_end, pend, rb_enc_get(str));
 	    if (ptr_end < pend) post = "...";
 	}
     }
-    pb = p->lex.pbeg;
-    if (p->ruby_sourceline == yylloc->beg_pos.lineno) {
+    pb = pbeg;
+    if (lineno == yylloc->beg_pos.lineno) {
 	pb += yylloc->beg_pos.column;
 	if (pb > pt) pb = pt;
     }
     if (pb < ptr) pb = ptr;
     if (len <= 4 && yylloc->beg_pos.lineno == yylloc->end_pos.lineno) {
-	compile_error(p, "%s", msg);
+	return;
     }
-    else if (!p->error_buffer && rb_stderr_tty_p()) {
+    if (RTEST(errbuf)) {
+	mesg = rb_attr_get(errbuf, idMesg);
+	if (RSTRING_LEN(mesg) > 0 && *(RSTRING_END(mesg)-1) != '\n')
+	    rb_str_cat_cstr(mesg, "\n");
+    }
+    else {
+	mesg = rb_enc_str_new(0, 0, rb_enc_get(str));
+    }
+    if (!errbuf && rb_stderr_tty_p()) {
 #define CSI_BEGIN "\033["
 #define CSI_SGR "m"
-	compile_error(p, "%s\n"
-		      CSI_BEGIN""CSI_SGR"%s" /* pre */
-		      CSI_BEGIN"1"CSI_SGR"%.*s"
-		      CSI_BEGIN"1;4"CSI_SGR"%.*s"
-		      CSI_BEGIN";1"CSI_SGR"%.*s"
-		      CSI_BEGIN""CSI_SGR"%s" /* post */,
-		      msg, pre,
-		      (int)(pb - ptr), ptr,
-		      (int)(pt - pb), pb,
-		      (int)(ptr_end - pt), pt,
-		      post);
+	rb_str_catf(mesg,
+		    CSI_BEGIN""CSI_SGR"%s" /* pre */
+		    CSI_BEGIN"1"CSI_SGR"%.*s"
+		    CSI_BEGIN"1;4"CSI_SGR"%.*s"
+		    CSI_BEGIN";1"CSI_SGR"%.*s"
+		    CSI_BEGIN""CSI_SGR"%s" /* post */
+		    "\n",
+		    pre,
+		    (int)(pb - ptr), ptr,
+		    (int)(pt - pb), pb,
+		    (int)(ptr_end - pt), pt,
+		    post);
     }
     else {
 	char *p2;
@@ -4753,18 +4790,27 @@ parser_yyerror(struct parser_params *p, const YYLTYPE *yylloc, const char *msg)
 	    p2 += (lim - ptr);
 	}
 	*p2 = '\0';
-	newline = "\n";
-	compile_error(p, "%s%s""%s%.*s%s%s""%s%s",
-		      msg, newline,
-		      pre, (int)len, code, post, newline,
-		      pre, caret);
+	rb_str_catf(mesg, "%s%.*s%s\n""%s%s",
+		    pre, (int)len, code, post,
+		    pre, caret);
     }
+    if (!errbuf) rb_write_error_str(mesg);
+}
 #else
+static int
+parser_yyerror(struct parser_params *p, const YYLTYPE *yylloc, const char *msg)
+{
     dispatch1(parse_error, STR_NEW2(msg));
     ripper_error(p);
-#endif /* !RIPPER */
+    token_flush(p);
     return 0;
 }
+
+static inline void
+parser_show_error_line(struct parser_params *p, const YYLTYPE *yylloc)
+{
+}
+#endif /* !RIPPER */
 
 static int
 vtable_size(const struct vtable *tbl)
@@ -5628,9 +5674,11 @@ regx_options(struct parser_params *p)
     options |= kopt;
     pushback(p, c);
     if (toklen(p)) {
+	YYLTYPE loc = RUBY_INIT_YYLLOC();
 	tokfix(p);
 	compile_error(p, "unknown regexp option%s - %*s",
 		      toklen(p) > 1 ? "s" : "", toklen(p), tok(p));
+	parser_show_error_line(p, &loc);
     }
     return options | RE_OPTION_ENCODING(kcode);
 }
@@ -7432,9 +7480,11 @@ parse_numvar(struct parser_params *p)
 static enum yytokentype
 parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
 {
+    const char *ptr = p->lex.pcur;
     register int c;
 
     SET_LEX_STATE(EXPR_END);
+    p->lex.ptok = ptr - 1; /* from '$' */
     newtok(p);
     c = nextc(p);
     switch (c) {
@@ -7512,6 +7562,7 @@ parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
 
       default:
 	if (!parser_is_identchar(p)) {
+	    YYLTYPE loc = RUBY_INIT_YYLLOC();
 	    if (c == -1 || ISSPACE(c)) {
 		compile_error(p, "`$' without identifiers is not allowed as a global variable name");
 	    }
@@ -7519,6 +7570,7 @@ parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
 		pushback(p, c);
 		compile_error(p, "`$%c' is not allowed as a global variable name", c);
 	    }
+	    parser_show_error_line(p, &loc);
 	    return 0;
 	}
       case '0':
@@ -7534,9 +7586,12 @@ parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
 static enum yytokentype
 parse_atmark(struct parser_params *p, const enum lex_state_e last_state)
 {
+    const char *ptr = p->lex.pcur;
     enum yytokentype result = tIVAR;
     register int c = nextc(p);
+    YYLTYPE loc;
 
+    p->lex.ptok = ptr - 1; /* from '@' */
     newtok(p);
     tokadd(p, '@');
     if (c == '@') {
@@ -7544,16 +7599,20 @@ parse_atmark(struct parser_params *p, const enum lex_state_e last_state)
 	tokadd(p, '@');
 	c = nextc(p);
     }
-    if (c == -1 || ISSPACE(c)) {
+    if (c == -1 || !parser_is_identchar(p)) {
+	pushback(p, c);
+	RUBY_SET_YYLLOC(loc);
 	if (result == tIVAR) {
 	    compile_error(p, "`@' without identifiers is not allowed as an instance variable name");
 	}
 	else {
 	    compile_error(p, "`@@' without identifiers is not allowed as a class variable name");
 	}
+	parser_show_error_line(p, &loc);
 	return 0;
     }
-    else if (ISDIGIT(c) || !parser_is_identchar(p)) {
+    else if (ISDIGIT(c)) {
+	RUBY_SET_YYLLOC(loc);
 	pushback(p, c);
 	if (result == tIVAR) {
 	    compile_error(p, "`@%c' is not allowed as an instance variable name", c);
@@ -7561,6 +7620,7 @@ parse_atmark(struct parser_params *p, const enum lex_state_e last_state)
 	else {
 	    compile_error(p, "`@@%c' is not allowed as a class variable name", c);
 	}
+	parser_show_error_line(p, &loc);
 	return 0;
     }
 
@@ -9146,7 +9206,7 @@ rb_parser_fatal(struct parser_params *p, const char *fmt, ...)
     p->debug = TRUE;
 }
 
-void
+YYLTYPE *
 rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_heredoc_t *here, YYLTYPE *yylloc)
 {
     const char *eos = RSTRING_PTR(here->term);
@@ -9156,24 +9216,27 @@ rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_
     yylloc->beg_pos.column = (int)(here->u3.lastidx - term_len);
     yylloc->end_pos.lineno = (int)here->sourceline;
     yylloc->end_pos.column = (int)(here->u3.lastidx);
+    return yylloc;
 }
 
-void
+YYLTYPE *
 rb_parser_set_location_of_none(struct parser_params *p, YYLTYPE *yylloc)
 {
     yylloc->beg_pos.lineno = p->ruby_sourceline;
     yylloc->beg_pos.column = (int)(p->lex.ptok - p->lex.pbeg);
     yylloc->end_pos.lineno = p->ruby_sourceline;
     yylloc->end_pos.column = (int)(p->lex.ptok - p->lex.pbeg);
+    return yylloc;
 }
 
-void
+YYLTYPE *
 rb_parser_set_location(struct parser_params *p, YYLTYPE *yylloc)
 {
     yylloc->beg_pos.lineno = p->ruby_sourceline;
     yylloc->beg_pos.column = (int)(p->lex.ptok - p->lex.pbeg);
     yylloc->end_pos.lineno = p->ruby_sourceline;
     yylloc->end_pos.column = (int)(p->lex.pcur - p->lex.pbeg);
+    return yylloc;
 }
 #endif /* !RIPPER */
 
@@ -11192,6 +11255,7 @@ parser_compile_error(struct parser_params *p, const char *fmt, ...)
 			       rb_long2int(p->lex.pcur - p->lex.pbeg),
 			       p->enc, fmt, ap);
     va_end(ap);
+    token_flush(p);
 }
 
 static size_t

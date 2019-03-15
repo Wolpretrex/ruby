@@ -6,6 +6,7 @@ require 'stringio'
 require 'rubygems/ext'
 require 'rubygems/specification'
 require 'rubygems/installer'
+require 'rubygems/platform'
 
 class TestGemSpecification < Gem::TestCase
 
@@ -59,12 +60,13 @@ end
     end
   end
 
-  def ext_spec
+  def ext_spec(platform: Gem::Platform::RUBY)
     @ext = util_spec 'ext', '1' do |s|
       s.executable = 'exec'
       s.test_file = 'test/suite.rb'
       s.extensions = %w[ext/extconf.rb]
       s.license = 'MIT'
+      s.platform = platform
 
       s.mark_version
       s.files = %w[lib/code.rb]
@@ -1673,6 +1675,16 @@ dependencies: []
     assert_equal expected, err
   end
 
+  def test_contains_requirable_file_eh_extension_java_platform
+    ext_spec(platform: Gem::Platform.new("java"))
+
+    _, err = capture_io do
+      refute @ext.contains_requirable_file? 'nonexistent'
+    end
+
+    assert_empty err
+  end
+
   def test_date
     assert_equal Gem::Specification::TODAY, @a1.date
   end
@@ -2542,6 +2554,14 @@ end
     same_spec = eval ruby_code
 
     assert_equal @c1, same_spec
+  end
+
+  def test_to_ruby_keeps_requirements_as_originally_specified
+    spec = util_spec 'a', '1' do |s|
+      s.add_dependency 'b', ['~> 1.0', '>= 1.0.0']
+    end
+
+    assert_includes spec.to_ruby, '"~> 1.0", ">= 1.0.0"'
   end
 
   def test_to_ruby_legacy
