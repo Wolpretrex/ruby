@@ -796,6 +796,43 @@ blocks_clear_marked_index(struct transient_heap_block* block)
     }
 }
 
+static void
+transient_heap_block_update_refs(struct transient_heap* theap, struct transient_heap_block* block)
+{
+    int marked_index = block->info.last_marked_index;
+
+    while (marked_index >= 0) {
+        struct transient_alloc_header *header = alloc_header(block, marked_index);
+        VALUE obj = header->obj;
+        TH_ASSERT(header->magic == TRANSIENT_HEAP_ALLOC_MAGIC);
+        if (header->magic != TRANSIENT_HEAP_ALLOC_MAGIC) rb_bug("rb_transient_heap_mark: wrong header %s\n", rb_obj_info(obj));
+
+        if (TRANSIENT_HEAP_DEBUG >= 3) fprintf(stderr, " * transient_heap_block_evacuate %p %s\n", (void *)header, rb_obj_info(obj));
+
+        if (obj != Qnil) {
+	    if (BUILTIN_TYPE(obj) == T_MOVED) {
+		printf("NEAT\n");
+	    }
+            header->obj = rb_gc_new_location(obj); /* for debug */
+        }
+        marked_index = header->next_marked_index;
+    }
+}
+
+void
+rb_transient_heap_update_references(void)
+{
+    struct transient_heap* theap = transient_heap_get();
+    struct transient_heap_block* block;
+
+    TH_ASSERT(theap->status == transient_heap_none);
+    block = theap->marked_blocks;
+    while (block) {
+	transient_heap_block_update_refs(theap, block);
+	block = block->info.next_block;
+    }
+}
+
 void
 rb_transient_heap_start_marking(int full_marking)
 {

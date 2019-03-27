@@ -7697,6 +7697,8 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
 	    if (STR_SHARED_P(obj)) {
 		UPDATE_IF_MOVED(objspace, any->as.string.as.heap.aux.shared);
 	    }
+	    break;
+
 	case T_DATA:
 	    /* Call the compaction callback, if it exists */
 	    {
@@ -7824,6 +7826,7 @@ gc_update_references(rb_objspace_t * objspace)
 
     rb_objspace_each_objects_without_setup(gc_ref_update, objspace);
     rb_vm_update_references(vm);
+    rb_transient_heap_update_references();
     gc_update_table_refs(objspace, global_symbols.str_sym);
 }
 
