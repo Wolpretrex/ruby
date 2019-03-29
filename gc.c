@@ -4590,11 +4590,18 @@ gc_mark_and_pin_maybe(rb_objspace_t *objspace, VALUE obj)
 {
     (void)VALGRIND_MAKE_MEM_DEFINED(&obj, sizeof(obj));
     if (is_pointer_to_heap(objspace, (void *)obj)) {
-	int type = BUILTIN_TYPE(obj);
+        int type;
+        void *ptr = __asan_region_is_poisoned((void *)obj, SIZEOF_VALUE);
+
+        unpoison_object(obj, false);
+	type = BUILTIN_TYPE(obj);
 	if (type != T_MOVED && type != T_ZOMBIE && type != T_NONE) {
 	    gc_pin(objspace, obj);
 	    gc_mark_ptr(objspace, obj);
 	}
+        if (ptr) {
+            poison_object(obj);
+        }
     }
 }
 
