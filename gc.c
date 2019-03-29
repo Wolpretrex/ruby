@@ -3364,7 +3364,6 @@ rb_obj_id(VALUE obj)
 #endif
 	return id;
     } else {
-	int tries;
 	id = nonspecial_obj_id(obj);
 
 	while(1) {
@@ -3535,7 +3534,7 @@ set_zero(st_data_t key, st_data_t val, st_data_t arg)
 }
 
 static VALUE
-type_sym(int type)
+type_sym(size_t type)
 {
     switch (type) {
 #define COUNT_TYPE(t) case (t): return ID2SYM(rb_intern(#t)); break;
@@ -7830,12 +7829,12 @@ gc_update_references(rb_objspace_t * objspace)
     gc_update_table_refs(objspace, global_symbols.str_sym);
 }
 
-static VALUE type_sym(int type);
+static VALUE type_sym(size_t type);
 
 static VALUE
 rb_gc_compact_stats(VALUE mod)
 {
-    int i;
+    size_t i;
 
     rb_objspace_t *objspace = &rb_objspace;
     VALUE h = rb_hash_new();
@@ -7871,6 +7870,7 @@ rb_gc_compact(VALUE mod)
     gc_compact_heap(objspace);
 
     gc_update_references(objspace);
+    heap_eden->freelist	= NULL;
 
     rb_clear_method_cache_by_class(rb_cObject);
     rb_clear_constant_cache();
