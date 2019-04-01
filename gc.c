@@ -3118,7 +3118,7 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
     for (i = 0; i < heap_allocated_pages; i++) {
 	p = heap_pages_sorted[i]->start; pend = p + heap_pages_sorted[i]->total_slots;
 	while (p < pend) {
-	    void *poisoned = poisoned_object_p(p);
+            void *poisoned = poisoned_object_p(p);
             unpoison_object((VALUE)p, false);
 	    switch (BUILTIN_TYPE(p)) {
 	      case T_DATA:
@@ -3143,10 +3143,10 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 		}
 		break;
 	    }
-	    if (poisoned) {
-		GC_ASSERT(BUILTIN_TYPE(p) == T_NONE);
-		poison_object((VALUE)p);
-	    }
+            if (poisoned) {
+                GC_ASSERT(BUILTIN_TYPE(p) == T_NONE);
+                poison_object((VALUE)p);
+            }
 	    p++;
 	}
     }
@@ -5535,8 +5535,8 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride, v
     rb_objspace_t *objspace = data->objspace;
 
     for (obj = (VALUE)page_start; obj != (VALUE)page_end; obj += stride) {
-	void *poisoned = poisoned_object_p(obj);
-	unpoison_object(obj, false);
+        void *poisoned = poisoned_object_p(obj);
+        unpoison_object(obj, false);
 
 	if (is_live_object(objspace, obj)) {
 	    /* count objects */
@@ -5575,10 +5575,10 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride, v
 		data->zombie_object_count++;
 	    }
 	}
-	if (poisoned) {
-	    GC_ASSERT(BUILTIN_TYPE(obj) == T_NONE);
-	    poison_object(obj);
-	}
+        if (poisoned) {
+            GC_ASSERT(BUILTIN_TYPE(obj) == T_NONE);
+            poison_object(obj);
+        }
     }
 
     return 0;
@@ -5597,8 +5597,8 @@ gc_verify_heap_page(rb_objspace_t *objspace, struct heap_page *page, VALUE obj)
 
     for (i=0; i<page->total_slots; i++) {
 	VALUE val = (VALUE)&page->start[i];
-	void *poisoned = poisoned_object_p(val);
-	unpoison_object(val, false);
+        void *poisoned = poisoned_object_p(val);
+        unpoison_object(val, false);
 
 	if (RBASIC(val) == 0) free_objects++;
 	if (BUILTIN_TYPE(val) == T_ZOMBIE) zombie_objects++;
@@ -5610,10 +5610,10 @@ gc_verify_heap_page(rb_objspace_t *objspace, struct heap_page *page, VALUE obj)
 	    remembered_old_objects++;
 	}
 
-	if (poisoned) {
-	    GC_ASSERT(BUILTIN_TYPE(val) == T_NONE);
-	    poison_object(val);
-	}
+        if (poisoned) {
+            GC_ASSERT(BUILTIN_TYPE(val) == T_NONE);
+            poison_object(val);
+        }
     }
 
     if (!is_incremental_marking(objspace) &&
