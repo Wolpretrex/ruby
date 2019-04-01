@@ -327,6 +327,10 @@ mjit_warning(const char *format, ...)
 static void
 add_to_list(struct rb_mjit_unit *unit, struct rb_mjit_unit_list *list)
 {
+    (void)RB_DEBUG_COUNTER_INC_IF(mjit_length_unit_queue, list == &unit_queue);
+    (void)RB_DEBUG_COUNTER_INC_IF(mjit_length_active_units, list == &active_units);
+    (void)RB_DEBUG_COUNTER_INC_IF(mjit_length_compact_units, list == &compact_units);
+
     list_add_tail(&list->head, &unit->unode);
     list->length++;
 }
@@ -334,6 +338,12 @@ add_to_list(struct rb_mjit_unit *unit, struct rb_mjit_unit_list *list)
 static void
 remove_from_list(struct rb_mjit_unit *unit, struct rb_mjit_unit_list *list)
 {
+#if USE_DEBUG_COUNTER
+    rb_debug_counter_add(RB_DEBUG_COUNTER_mjit_length_unit_queue, -1, list == &unit_queue);
+    rb_debug_counter_add(RB_DEBUG_COUNTER_mjit_length_active_units, -1, list == &active_units);
+    rb_debug_counter_add(RB_DEBUG_COUNTER_mjit_length_compact_units, -1, list == &compact_units);
+#endif
+
     list_del(&unit->unode);
     list->length--;
 }
@@ -1231,6 +1241,7 @@ mjit_worker(void)
         if (unit) {
             // JIT compile
             mjit_func_t func = convert_unit_to_func(unit);
+            (void)RB_DEBUG_COUNTER_INC_IF(mjit_compile_failures, func == (mjit_func_t)NOT_COMPILED_JIT_ISEQ_FUNC);
 
             // `mjit_copy_cache_from_main_thread` in `mjit_compile` may wait for a long time
             // and worker may be stopped during the compilation.

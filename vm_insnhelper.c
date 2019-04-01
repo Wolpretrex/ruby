@@ -299,8 +299,8 @@ vm_push_frame(rb_execution_context_t *ec,
     *sp   = type;       /* ep[-0] / ENV_FLAGS */
 
     /* Store initial value of ep as bp to skip calculation cost of bp on JIT cancellation. */
-    cfp->ep = cfp->bp = sp;
-    cfp->sp = sp + 1;
+    cfp->ep = sp;
+    cfp->__bp__ = cfp->sp = sp + 1;
 
 #if VM_DEBUG_BP_CHECK
     cfp->bp_check = sp + 1;
@@ -1637,9 +1637,10 @@ double_cmp_ge(double a, double b)
     return a >= b ? Qtrue : Qfalse;
 }
 
-static VALUE *
+static inline VALUE *
 vm_base_ptr(const rb_control_frame_t *cfp)
 {
+#if 0 // we may optimize and use this once we confirm it does not spoil performance on JIT.
     const rb_control_frame_t *prev_cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
 
     if (cfp->iseq && VM_FRAME_RUBYFRAME_P(cfp)) {
@@ -1661,6 +1662,9 @@ vm_base_ptr(const rb_control_frame_t *cfp)
     else {
 	return NULL;
     }
+#else
+    return cfp->__bp__;
+#endif
 }
 
 /* method call processes with call_info */
@@ -1680,12 +1684,16 @@ static vm_call_handler vm_call_iseq_setup_func(const struct rb_call_info *ci, co
 static VALUE
 vm_call_iseq_setup_tailcall_0start(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_iseq_setup_tailcall_0start);
+
     return vm_call_iseq_setup_tailcall(ec, cfp, calling, ci, cc, 0);
 }
 
 static VALUE
 vm_call_iseq_setup_normal_0start(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_iseq_setup_0start);
+
     const rb_iseq_t *iseq = def_iseq_ptr(cc->me->def);
     int param = iseq->body->param.size;
     int local = iseq->body->local_table_size;
@@ -1703,6 +1711,29 @@ rb_simple_iseq_p(const rb_iseq_t *iseq)
 	   iseq->body->param.flags.has_block == FALSE;
 }
 
+static bool
+rb_iseq_only_optparam_p(const rb_iseq_t *iseq)
+{
+    return iseq->body->param.flags.has_opt == TRUE &&
+           iseq->body->param.flags.has_rest == FALSE &&
+           iseq->body->param.flags.has_post == FALSE &&
+           iseq->body->param.flags.has_kw == FALSE &&
+           iseq->body->param.flags.has_kwrest == FALSE &&
+           iseq->body->param.flags.has_block == FALSE;
+}
+
+static bool
+rb_iseq_only_kwparam_p(const rb_iseq_t *iseq)
+{
+    return iseq->body->param.flags.has_opt == FALSE &&
+           iseq->body->param.flags.has_rest == FALSE &&
+           iseq->body->param.flags.has_post == FALSE &&
+           iseq->body->param.flags.has_kw == TRUE &&
+           iseq->body->param.flags.has_kwrest == FALSE &&
+           iseq->body->param.flags.has_block == FALSE;
+}
+
+
 static inline void
 CALLER_SETUP_ARG(struct rb_control_frame_struct *restrict cfp,
                  struct rb_calling_info *restrict calling,
@@ -1716,32 +1747,192 @@ CALLER_SETUP_ARG(struct rb_control_frame_struct *restrict cfp,
     }
 }
 
+#define USE_OPT_HIST 0
+
+#if USE_OPT_HIST
+#define OPT_HIST_MAX 64
+static int opt_hist[OPT_HIST_MAX+1];
+
+__attribute__((destructor))
+static void
+opt_hist_show_results_at_exit(void)
+{
+    for (int i=0; i<OPT_HIST_MAX; i++) {
+        fprintf(stderr, "opt_hist\t%d\t%d\n", i, opt_hist[i]);
+    }
+}
+#endif
+
+static VALUE
+vm_call_iseq_setup_normal_opt_start(rb_execution_context_t *ec, rb_control_frame_t *cfp,
+                                    struct rb_calling_info *calling,
+                                    const struct rb_call_info *ci, struct rb_call_cache *cc)
+{
+    const rb_iseq_t *iseq = def_iseq_ptr(cc->me->def);
+    const int lead_num = iseq->body->param.lead_num;
+    const int opt = calling->argc - lead_num;
+    const int opt_num = iseq->body->param.opt_num;
+    const int opt_pc = (int)iseq->body->param.opt_table[opt];
+    const int param = iseq->body->param.size;
+    const int local = iseq->body->local_table_size;
+    const int delta = opt_num - opt;
+
+    RB_DEBUG_COUNTER_INC(ccf_iseq_opt);
+
+#if USE_OPT_HIST
+    if (opt_pc < OPT_HIST_MAX) {
+        opt_hist[opt]++;
+    }
+    else {
+        opt_hist[OPT_HIST_MAX]++;
+    }
+#endif
+
+    return vm_call_iseq_setup_normal(ec, cfp, calling, cc->me, opt_pc, param - delta, local);
+}
+
+static void
+args_setup_kw_parameters(rb_execution_context_t *const ec, const rb_iseq_t *const iseq,
+                         VALUE *const passed_values, const int passed_keyword_len, const VALUE *const passed_keywords,
+                         VALUE *const locals);
+
+static VALUE
+vm_call_iseq_setup_kwparm_kwarg(rb_execution_context_t *ec, rb_control_frame_t *cfp,
+                                struct rb_calling_info *calling,
+                                const struct rb_call_info *ci, struct rb_call_cache *cc)
+{
+    VM_ASSERT(ci->flag & VM_CALL_KWARG);
+    RB_DEBUG_COUNTER_INC(ccf_iseq_kw1);
+
+    const rb_iseq_t *iseq = def_iseq_ptr(cc->me->def);
+    const struct rb_iseq_param_keyword *kw_param = iseq->body->param.keyword;
+    const struct rb_call_info_kw_arg *kw_arg = ((struct rb_call_info_with_kwarg *)ci)->kw_arg;
+    const int ci_kw_len = kw_arg->keyword_len;
+    const VALUE * const ci_keywords = kw_arg->keywords;
+    VALUE *argv = cfp->sp - calling->argc;
+    VALUE *const klocals = argv + kw_param->bits_start - kw_param->num;
+    const int lead_num = iseq->body->param.lead_num;
+    VALUE * const ci_kws = ALLOCA_N(VALUE, ci_kw_len);
+    MEMCPY(ci_kws, argv + lead_num, VALUE, ci_kw_len);
+    args_setup_kw_parameters(ec, iseq, ci_kws, ci_kw_len, ci_keywords, klocals);
+
+    int param = iseq->body->param.size;
+    int local = iseq->body->local_table_size;
+    return vm_call_iseq_setup_normal(ec, cfp, calling, cc->me, 0, param, local);
+}
+
+static VALUE
+vm_call_iseq_setup_kwparm_nokwarg(rb_execution_context_t *ec, rb_control_frame_t *cfp,
+                                  struct rb_calling_info *calling,
+                                  const struct rb_call_info *ci, struct rb_call_cache *cc)
+{
+    VM_ASSERT((ci->flag & VM_CALL_KWARG) == 0);
+    RB_DEBUG_COUNTER_INC(ccf_iseq_kw2);
+
+    const rb_iseq_t *iseq = def_iseq_ptr(cc->me->def);
+    const struct rb_iseq_param_keyword *kw_param = iseq->body->param.keyword;
+    VALUE * const argv = cfp->sp - calling->argc;
+    VALUE * const klocals = argv + kw_param->bits_start - kw_param->num;
+
+    for (int i=0; i<kw_param->num; i++) {
+        klocals[i] = kw_param->default_values[i];
+    }
+    /* NOTE: don't need to setup (clear) unspecified bits
+             because no code check it.
+             klocals[kw_param->num] = INT2FIX(0); */
+
+    int param = iseq->body->param.size;
+    int local = iseq->body->local_table_size;
+    return vm_call_iseq_setup_normal(ec, cfp, calling, cc->me, 0, param, local);
+}
+
 static inline int
 vm_callee_setup_arg(rb_execution_context_t *ec, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc,
 		    const rb_iseq_t *iseq, VALUE *argv, int param_size, int local_size)
 {
-    if (LIKELY(rb_simple_iseq_p(iseq) && !(ci->flag & VM_CALL_KW_SPLAT))) {
-	rb_control_frame_t *cfp = ec->cfp;
+    if (LIKELY(!(ci->flag & VM_CALL_KW_SPLAT))) {
+        if (LIKELY(rb_simple_iseq_p(iseq))) {
+            rb_control_frame_t *cfp = ec->cfp;
+            CALLER_SETUP_ARG(cfp, calling, ci); /* splat arg */
 
-	CALLER_SETUP_ARG(cfp, calling, ci); /* splat arg */
+            if (calling->argc != iseq->body->param.lead_num) {
+                argument_arity_error(ec, iseq, calling->argc, iseq->body->param.lead_num, iseq->body->param.lead_num);
+            }
 
-	if (calling->argc != iseq->body->param.lead_num) {
-	    argument_arity_error(ec, iseq, calling->argc, iseq->body->param.lead_num, iseq->body->param.lead_num);
-	}
+            CC_SET_FASTPATH(cc, vm_call_iseq_setup_func(ci, param_size, local_size), vm_call_iseq_optimizable_p(ci, cc));
+            return 0;
+        }
+        else if (rb_iseq_only_optparam_p(iseq)) {
+            rb_control_frame_t *cfp = ec->cfp;
+            CALLER_SETUP_ARG(cfp, calling, ci); /* splat arg */
 
-        CC_SET_FASTPATH(cc, vm_call_iseq_setup_func(ci, param_size, local_size),
-			(!IS_ARGS_SPLAT(ci) && !IS_ARGS_KEYWORD(ci) &&
-			 !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED)));
-	return 0;
+            const int lead_num = iseq->body->param.lead_num;
+            const int opt_num = iseq->body->param.opt_num;
+            const int argc = calling->argc;
+            const int opt = argc - lead_num;
+
+            if (opt < 0 || opt > opt_num) {
+                argument_arity_error(ec, iseq, argc, lead_num, lead_num + opt_num);
+            }
+
+            CC_SET_FASTPATH(cc, vm_call_iseq_setup_normal_opt_start,
+                            !IS_ARGS_SPLAT(ci) && !IS_ARGS_KEYWORD(ci) &&
+                            !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED));
+
+            /* initialize opt vars for self-references */
+            VM_ASSERT(iseq->body->param.size == lead_num + opt_num);
+            for (int i=argc; i<lead_num + opt_num; i++) {
+                argv[i] = Qnil;
+            }
+            return (int)iseq->body->param.opt_table[opt];
+        }
+        else if (rb_iseq_only_kwparam_p(iseq) && !IS_ARGS_SPLAT(ci)) {
+            const int lead_num = iseq->body->param.lead_num;
+            const int argc = calling->argc;
+            const struct rb_iseq_param_keyword *kw_param = iseq->body->param.keyword;
+
+            if (ci->flag & VM_CALL_KWARG) {
+                const struct rb_call_info_kw_arg *kw_arg = ((struct rb_call_info_with_kwarg *)ci)->kw_arg;
+
+                if (argc - kw_arg->keyword_len == lead_num) {
+                    const int ci_kw_len = kw_arg->keyword_len;
+                    const VALUE * const ci_keywords = kw_arg->keywords;
+                    VALUE * const ci_kws = ALLOCA_N(VALUE, ci_kw_len);
+                    MEMCPY(ci_kws, argv + lead_num, VALUE, ci_kw_len);
+
+                    VALUE *const klocals = argv + kw_param->bits_start - kw_param->num;
+                    args_setup_kw_parameters(ec, iseq, ci_kws, ci_kw_len, ci_keywords, klocals);
+
+                    CC_SET_FASTPATH(cc, vm_call_iseq_setup_kwparm_kwarg,
+                                    !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED));
+
+                    return 0;
+                }
+            }
+            else if (argc == lead_num) {
+                /* no kwarg */
+                VALUE *const klocals = argv + kw_param->bits_start - kw_param->num;
+                args_setup_kw_parameters(ec, iseq, NULL, 0, NULL, klocals);
+
+                if (klocals[kw_param->num] == INT2FIX(0)) {
+                    /* copy from default_values */
+                    CC_SET_FASTPATH(cc, vm_call_iseq_setup_kwparm_nokwarg,
+                                    !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED));
+                }
+
+                return 0;
+            }
+        }
     }
-    else {
-	return setup_parameters_complex(ec, iseq, calling, ci, argv, arg_setup_method);
-    }
+
+    return setup_parameters_complex(ec, iseq, calling, ci, argv, arg_setup_method);
 }
 
 static VALUE
 vm_call_iseq_setup(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_iseq_setup);
+
     const rb_iseq_t *iseq = def_iseq_ptr(cc->me->def);
     const int param_size = iseq->body->param.size;
     const int local_size = iseq->body->local_table_size;
@@ -2018,6 +2209,8 @@ vm_call_cfunc_with_frame(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp
 static VALUE
 vm_call_cfunc(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_cfunc);
+
     CALLER_SETUP_ARG(reg_cfp, calling, ci);
     return vm_call_cfunc_with_frame(ec, reg_cfp, calling, ci, cc);
 }
@@ -2025,6 +2218,7 @@ vm_call_cfunc(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb
 static VALUE
 vm_call_ivar(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_ivar);
     cfp->sp -= 1;
     return vm_getivar(calling->recv, cc->me->def->body.attr.id, NULL, cc, TRUE);
 }
@@ -2032,6 +2226,7 @@ vm_call_ivar(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_call
 static VALUE
 vm_call_attrset(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_attrset);
     VALUE val = *(cfp->sp - 1);
     cfp->sp -= 2;
     return vm_setivar(calling->recv, cc->me->def->body.attr.id, val, NULL, cc, 1);
@@ -2053,6 +2248,8 @@ vm_call_bmethod_body(rb_execution_context_t *ec, struct rb_calling_info *calling
 static VALUE
 vm_call_bmethod(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_bmethod);
+
     VALUE *argv;
     int argc;
 
@@ -2078,6 +2275,8 @@ ci_missing_reason(const struct rb_call_info *ci)
 static VALUE
 vm_call_opt_send(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *orig_ci, struct rb_call_cache *orig_cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_opt_send);
+
     int i;
     VALUE sym;
     struct rb_call_info *ci;
@@ -2157,6 +2356,8 @@ vm_invoke_block_opt_call(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp
 static VALUE
 vm_call_opt_call(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_opt_call);
+
     VALUE procval = calling->recv;
     return vm_invoke_block_opt_call(ec, reg_cfp, calling, ci, VM_BH_FROM_PROC(procval));
 }
@@ -2164,6 +2365,7 @@ vm_call_opt_call(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct
 static VALUE
 vm_call_opt_block_call(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_opt_block_call);
     VALUE block_handler = VM_ENV_BLOCK_HANDLER(VM_CF_LEP(reg_cfp));
 
     if (BASIC_OP_UNREDEFINED_P(BOP_CALL, PROC_REDEFINED_OP_FLAG)) {
@@ -2179,6 +2381,8 @@ vm_call_opt_block_call(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, 
 static VALUE
 vm_call_method_missing(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *orig_ci, struct rb_call_cache *orig_cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_method_missing);
+
     VALUE *argv = STACK_ADDR_FROM_TOP(calling->argc);
     struct rb_call_info ci_entry;
     const struct rb_call_info *ci;
@@ -2218,6 +2422,8 @@ static const rb_callable_method_entry_t *refined_method_callable_without_refinem
 static VALUE
 vm_call_zsuper(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc, VALUE klass)
 {
+    RB_DEBUG_COUNTER_INC(ccf_method_missing);
+
     klass = RCLASS_SUPER(klass);
     cc->me = klass ? rb_callable_method_entry(klass, ci->mid) : NULL;
 
@@ -2510,12 +2716,15 @@ vm_call_method(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_ca
 static VALUE
 vm_call_general(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_general);
     return vm_call_method(ec, reg_cfp, calling, ci, cc);
 }
 
 static VALUE
 vm_call_super_method(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc)
 {
+    RB_DEBUG_COUNTER_INC(ccf_super_method);
+
     /* this check is required to distinguish with other functions. */
     if (cc->call != vm_call_super_method) rb_bug("bug");
     return vm_call_method(ec, reg_cfp, calling, ci, cc);

@@ -24,7 +24,6 @@ jobs:
   - script: |
       TRAVIS=1 make $(task)
     displayName: "test"
-    continueOnError: true # test-bundled-gems is failing on trunk by power_assert now. TODO: remove this once it gets green
 
 - job: macOS
   pool:
@@ -51,7 +50,6 @@ jobs:
   - script: |
       make $(task)
     displayName: "test"
-    continueOnError: true # test-bundled-gems is failing on trunk by power_assert now. TODO: remove this once it gets green
 
 # - job: vs2015
 #   pool:
@@ -96,7 +94,15 @@ jobs:
 #      bundler:
 #        task: test-bundler
   steps:
-  - script: vcpkg --triplet x64-windows install openssl readline zlib
+  # FIXME: Refactor this. Note that %errorlevel% does not work in for loop.
+  - script: |
+      vcpkg --triplet x64-windows install %dependencies% || (
+        sleep 4 && vcpkg --triplet x64-windows install %dependencies%
+      ) || (
+        sleep 25 && vcpkg --triplet x64-windows install %dependencies%
+      )
+    env:
+      dependencies: openssl readline zlib
   - checkout: self
     fetchDepth: 10
   - script: |

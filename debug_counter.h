@@ -23,8 +23,8 @@
  *                                  (2) called from C (rb_funcall).
  * * mc_global_state_miss: inline mc miss by global_state miss.
  * * mc_class_serial_miss:            ... by mc_class_serial_miss
- * * mc_cme_complement: cme complement counts.
- * * mc_cme_complement_hit: cme cache hit counts.
+ * * mc_cme_complement: callable_method_entry complement counts.
+ * * mc_cme_complement_hit: callable_method_entry cache hit counts.
  * * mc_search_super: search_method() call counts.
  */
 RB_DEBUG_COUNTER(mc_inline_hit)
@@ -36,6 +36,28 @@ RB_DEBUG_COUNTER(mc_class_serial_miss)
 RB_DEBUG_COUNTER(mc_cme_complement)
 RB_DEBUG_COUNTER(mc_cme_complement_hit)
 RB_DEBUG_COUNTER(mc_search_super)
+
+/*
+ * call cache fastpath usage
+ */
+RB_DEBUG_COUNTER(ccf_general)
+RB_DEBUG_COUNTER(ccf_iseq_setup)
+RB_DEBUG_COUNTER(ccf_iseq_setup_0start)
+RB_DEBUG_COUNTER(ccf_iseq_setup_tailcall_0start)
+RB_DEBUG_COUNTER(ccf_iseq_fix) /* several functions created with tool/mk_call_iseq_optimized.rb */
+RB_DEBUG_COUNTER(ccf_iseq_opt) /* has_opt == TRUE (has optional parameters), but other flags are FALSE */
+RB_DEBUG_COUNTER(ccf_iseq_kw1) /* vm_call_iseq_setup_kwparm_kwarg() */
+RB_DEBUG_COUNTER(ccf_iseq_kw2) /* vm_call_iseq_setup_kwparm_nokwarg() */
+RB_DEBUG_COUNTER(ccf_cfunc)
+RB_DEBUG_COUNTER(ccf_ivar) /* attr_reader */
+RB_DEBUG_COUNTER(ccf_attrset) /* attr_writer */
+RB_DEBUG_COUNTER(ccf_method_missing)
+RB_DEBUG_COUNTER(ccf_zsuper)
+RB_DEBUG_COUNTER(ccf_bmethod)
+RB_DEBUG_COUNTER(ccf_opt_send)
+RB_DEBUG_COUNTER(ccf_opt_call)
+RB_DEBUG_COUNTER(ccf_opt_block_call)
+RB_DEBUG_COUNTER(ccf_super_method)
 
 /*
  * control frame push counts.
@@ -232,6 +254,29 @@ RB_DEBUG_COUNTER(heap_xfree)
 RB_DEBUG_COUNTER(theap_alloc)
 RB_DEBUG_COUNTER(theap_alloc_fail)
 RB_DEBUG_COUNTER(theap_evacuate)
+
+/* mjit_exec() counts */
+RB_DEBUG_COUNTER(mjit_exec)
+RB_DEBUG_COUNTER(mjit_exec_not_added)
+RB_DEBUG_COUNTER(mjit_exec_not_added_add_iseq)
+RB_DEBUG_COUNTER(mjit_exec_not_ready)
+RB_DEBUG_COUNTER(mjit_exec_not_compiled)
+RB_DEBUG_COUNTER(mjit_exec_call_func)
+
+/* MJIT cancel counters */
+RB_DEBUG_COUNTER(mjit_cancel)
+RB_DEBUG_COUNTER(mjit_cancel_ivar)
+RB_DEBUG_COUNTER(mjit_cancel_send_inline)
+RB_DEBUG_COUNTER(mjit_cancel_opt_insn) /* CALL_SIMPLE_METHOD */
+RB_DEBUG_COUNTER(mjit_cancel_trace)
+
+/* rb_mjit_unit_list length */
+RB_DEBUG_COUNTER(mjit_length_unit_queue)
+RB_DEBUG_COUNTER(mjit_length_active_units)
+RB_DEBUG_COUNTER(mjit_length_compact_units)
+
+/* Other MJIT counters */
+RB_DEBUG_COUNTER(mjit_compile_failures)
 
 /* load (not implemented yet) */
 /*

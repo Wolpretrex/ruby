@@ -65,12 +65,13 @@ has_valid_method_type(CALL_CACHE cc)
 // Returns true if iseq is inlinable, otherwise NULL. This becomes true in the same condition
 // as CC_SET_FASTPATH (in vm_callee_setup_arg) is called from vm_call_iseq_setup.
 static bool
-inlinable_iseq_p(CALL_INFO ci, CALL_CACHE cc, const rb_iseq_t *iseq)
+inlinable_iseq_p(const CALL_INFO ci, const CALL_CACHE cc, const rb_iseq_t *iseq)
 {
     extern bool rb_simple_iseq_p(const rb_iseq_t *iseq);
     return iseq != NULL
-        && rb_simple_iseq_p(iseq) && !(ci->flag & VM_CALL_KW_SPLAT) /* Top of vm_callee_setup_arg. In this case, opt_pc is 0. */
-        && (!IS_ARGS_SPLAT(ci) && !IS_ARGS_KEYWORD(ci) && !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED)); /* CC_SET_FASTPATH */
+        && !(ci->flag & VM_CALL_KW_SPLAT) && rb_simple_iseq_p(iseq) // Top of vm_callee_setup_arg. In this case, opt_pc is 0.
+        && ci->orig_argc == iseq->body->param.lead_num // exclude argument_arity_error (assumption: `calling->argc == ci->orig_argc` in send insns)
+        && vm_call_iseq_optimizable_p(ci, cc); // CC_SET_FASTPATH condition
 }
 
 static int
@@ -188,9 +189,10 @@ compile_cancel_handler(FILE *f, const struct rb_iseq_constant_body *body, struct
 {
     unsigned int i;
     fprintf(f, "\ncancel:\n");
+    fprintf(f, "    RB_DEBUG_COUNTER_INC(mjit_cancel);\n");
     if (status->local_stack_p) {
         for (i = 0; i < body->stack_max; i++) {
-            fprintf(f, "    *((VALUE *)reg_cfp->bp + %d) = stack[%d];\n", i + 1, i);
+            fprintf(f, "    *(vm_base_ptr(reg_cfp) + %d) = stack[%d];\n", i, i);
         }
     }
     fprintf(f, "    return Qundef;\n");

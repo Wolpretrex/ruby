@@ -419,7 +419,6 @@ static NODE *new_args(struct parser_params*,NODE*,NODE*,ID,NODE*,NODE*,const YYL
 static NODE *new_args_tail(struct parser_params*,NODE*,ID,ID,const YYLTYPE*);
 static NODE *new_kw_arg(struct parser_params *p, NODE *k, const YYLTYPE *loc);
 static NODE *args_with_numbered(struct parser_params*,NODE*,int);
-static ID numparam_id(struct parser_params*,int);
 
 static VALUE negate_lit(struct parser_params*, VALUE);
 static NODE *ret_args(struct parser_params*,NODE*);
@@ -472,6 +471,7 @@ static int literal_concat0(struct parser_params *p, VALUE head, VALUE tail);
 static NODE *heredoc_dedent(struct parser_params*,NODE*);
 #define get_id(id) (id)
 #define get_value(val) (val)
+#define get_num(num) (num)
 #else  /* RIPPER */
 #define NODE_RIPPER NODE_CDECL
 
@@ -498,6 +498,7 @@ static ID ripper_get_id(VALUE);
 #define get_id(id) ripper_get_id(id)
 static VALUE ripper_get_value(VALUE);
 #define get_value(val) ripper_get_value(val)
+#define get_num(num) (int)get_id(num)
 static VALUE assignable(struct parser_params*,VALUE);
 static int id_is_var(struct parser_params *p, ID id);
 
@@ -533,7 +534,10 @@ PRINTF_ARGS(void rb_parser_fatal(struct parser_params *p, const char *fmt, ...),
 YYLTYPE *rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_heredoc_t *here, YYLTYPE *yylloc);
 YYLTYPE *rb_parser_set_location_of_none(struct parser_params *p, YYLTYPE *yylloc);
 YYLTYPE *rb_parser_set_location(struct parser_params *p, YYLTYPE *yylloc);
+ID rb_parser_numparam_id(struct parser_params *p, int num);
 RUBY_SYMBOL_EXPORT_END
+
+#define numparam_id rb_parser_numparam_id
 
 static void parser_token_value_print(struct parser_params *p, enum yytokentype type, const YYSTYPE *valp);
 static ID formal_argument(struct parser_params*, ID);
@@ -858,6 +862,7 @@ static void token_info_warn(struct parser_params *p, const char *token, token_in
 %token <id>   tCONSTANT      "constant"
 %token <id>   tCVAR          "class variable"
 %token <id>   tLABEL
+%token <id>   tNUMPARAM      "numbered parameter"
 %token <node> tINTEGER       "integer literal"
 %token <node> tFLOAT         "float literal"
 %token <node> tRATIONAL      "rational literal"
@@ -867,7 +872,6 @@ static void token_info_warn(struct parser_params *p, const char *token, token_in
 %token <node> tBACK_REF      "back reference"
 %token <node> tSTRING_CONTENT "literal content"
 %token <num>  tREGEXP_END
-%token <num>  tNUMPARAM      "numbered parameter"
 
 %type <node> singleton strings string string1 xstring regexp
 %type <node> string_contents xstring_contents regexp_contents string_content
@@ -3817,9 +3821,9 @@ string_dvar	: tGVAR
 		| tNUMPARAM
 		    {
 		    /*%%%*/
-			$$ = NEW_DVAR(numparam_id(p, $1), &@1);
+			$$ = NEW_DVAR($1, &@1);
 		    /*% %*/
-		    /*% ripper: var_ref!(number_arg!($1)) %*/
+		    /*% ripper: var_ref!($1) %*/
 		    }
 		| backref
 		;
@@ -3877,12 +3881,6 @@ user_variable	: tIDENTIFIER
 		| tCONSTANT
 		| tCVAR
 		| tNUMPARAM
-		    {
-		    /*%%%*/
-			$$ = numparam_id(p, $1);
-		    /*% %*/
-		    /*% ripper: number_arg!($1) %*/
-		    }
 		;
 
 keyword_variable: keyword_nil {$$ = KWD2EID(nil, $1);}
@@ -5464,11 +5462,9 @@ tokadd_codepoint(struct parser_params *p, rb_encoding **encp,
     else if (codepoint >= 0x80) {
 	rb_encoding *utf8 = rb_utf8_encoding();
 	if (*encp && utf8 != *encp) {
-	    static const char mixed_utf8[] = "UTF-8 mixed within %s source";
-	    size_t len = sizeof(mixed_utf8) - 2 + strlen(rb_enc_name(*encp));
-	    char *mesg = alloca(len);
-	    snprintf(mesg, len, mixed_utf8, rb_enc_name(*encp));
-	    yyerror0(mesg);
+	    YYLTYPE loc = RUBY_INIT_YYLLOC();
+	    compile_error(p, "UTF-8 mixed within %s source", rb_enc_name(*encp));
+	    parser_show_error_line(p, &loc);
 	    return wide;
 	}
 	*encp = utf8;
@@ -5793,12 +5789,10 @@ parser_update_heredoc_indent(struct parser_params *p, int c)
 static void
 parser_mixed_error(struct parser_params *p, rb_encoding *enc1, rb_encoding *enc2)
 {
-    static const char mixed_msg[] = "%s mixed within %s source";
+    YYLTYPE loc = RUBY_INIT_YYLLOC();
     const char *n1 = rb_enc_name(enc1), *n2 = rb_enc_name(enc2);
-    const size_t len = sizeof(mixed_msg) - 4 + strlen(n1) + strlen(n2);
-    char *errbuf = ALLOCA_N(char, len);
-    snprintf(errbuf, len, mixed_msg, n1, n2);
-    yyerror0(errbuf);
+    compile_error(p, "%s mixed within %s source", n1, n2);
+    parser_show_error_line(p, &loc);
 }
 
 static void
@@ -7282,11 +7276,11 @@ parse_numeric(struct parser_params *p, int c)
   decode_num:
     pushback(p, c);
     if (nondigit) {
-	char tmp[30];
       trailing_uc:
 	literal_flush(p, p->lex.pcur - 1);
-	snprintf(tmp, sizeof(tmp), "trailing `%c' in number", nondigit);
-	yyerror0(tmp);
+	YYLTYPE loc = RUBY_INIT_YYLLOC();
+	compile_error(p, "trailing `%c' in number", nondigit);
+	parser_show_error_line(p, &loc);
     }
     tokfix(p);
     if (is_float) {
@@ -7655,7 +7649,7 @@ parser_numbered_param(struct parser_params *p, unsigned long n)
 	compile_error(p, "ordinary parameter is defined");
 	return false;
     }
-    set_yylval_num((int)n);
+    set_yylval_name(numparam_id(p, (int)n));
     SET_LEX_STATE(EXPR_ARG);
     return true;
 }
@@ -9162,6 +9156,8 @@ id_is_var(struct parser_params *p, ID id)
 	switch (id & ID_SCOPE_MASK) {
 	  case ID_GLOBAL: case ID_INSTANCE: case ID_CONST: case ID_CLASS:
 	    return 1;
+	  case ID_INTERNAL:
+	    return vtable_included(p->lvtbl->args, id);
 	  case ID_LOCAL:
 	    if (dyna_in_block(p) && dvar_defined(p, id)) return 1;
 	    if (local_id(p, id)) return 1;
@@ -9350,7 +9346,7 @@ parser_token_value_print(struct parser_params *p, enum yytokentype type, const Y
 #ifndef RIPPER
 	v = rb_id2str(valp->id);
 #else
-	v = valp->val;
+	v = valp->node->nd_rval;
 #endif
 	rb_parser_printf(p, "%"PRIsVALUE, v);
 	break;
@@ -9462,21 +9458,6 @@ assignable(struct parser_params *p, ID id, NODE *val, const YYLTYPE *loc)
     }
     if (err) yyerror1(loc, err);
     return NEW_BEGIN(0, loc);
-}
-
-static ID
-numparam_id(struct parser_params *p, int idx)
-{
-    struct vtable *args;
-    if (idx <= 0) return (ID)0;
-    if (p->max_numparam < idx) {
-	p->max_numparam = idx;
-    }
-    args = p->lvtbl->args;
-    while (idx > args->pos) {
-	vtable_add(args, internal_id(p));
-    }
-    return args->tbl[idx-1];
 }
 #else
 static VALUE
@@ -10373,6 +10354,21 @@ args_with_numbered(struct parser_params *p, NODE *args, int max_numparam)
     return args;
 }
 
+ID
+rb_parser_numparam_id(struct parser_params *p, int idx)
+{
+    struct vtable *args;
+    if (idx <= 0) return (ID)0;
+    if (p->max_numparam < idx) {
+	p->max_numparam = idx;
+    }
+    args = p->lvtbl->args;
+    while (idx > args->pos) {
+	vtable_add(args, internal_id(p));
+    }
+    return args->tbl[idx-1];
+}
+
 static NODE*
 dsym_node(struct parser_params *p, NODE *node, const YYLTYPE *loc)
 {
@@ -11222,10 +11218,14 @@ rb_parser_set_context(VALUE vparser, const struct rb_block *base, int main)
 #define rb_parser_encoding ripper_parser_encoding
 #define rb_parser_get_yydebug ripper_parser_get_yydebug
 #define rb_parser_set_yydebug ripper_parser_set_yydebug
+#define rb_parser_get_debug_output ripper_parser_get_debug_output
+#define rb_parser_set_debug_output ripper_parser_set_debug_output
 static VALUE ripper_parser_end_seen_p(VALUE vparser);
 static VALUE ripper_parser_encoding(VALUE vparser);
 static VALUE ripper_parser_get_yydebug(VALUE self);
 static VALUE ripper_parser_set_yydebug(VALUE self, VALUE flag);
+static VALUE ripper_parser_get_debug_output(VALUE self);
+static VALUE ripper_parser_set_debug_output(VALUE self, VALUE output);
 
 /*
  *  call-seq:
@@ -11302,6 +11302,36 @@ rb_parser_set_yydebug(VALUE self, VALUE flag)
     TypedData_Get_Struct(self, struct parser_params, &parser_data_type, p);
     p->debug = RTEST(flag);
     return flag;
+}
+
+/*
+ *  call-seq:
+ *    ripper.debug_output   -> obj
+ *
+ *  Get debug output.
+ */
+VALUE
+rb_parser_get_debug_output(VALUE self)
+{
+    struct parser_params *p;
+
+    TypedData_Get_Struct(self, struct parser_params, &parser_data_type, p);
+    return p->debug_output;
+}
+
+/*
+ *  call-seq:
+ *    ripper.debug_output = obj
+ *
+ *  Set debug output.
+ */
+VALUE
+rb_parser_set_debug_output(VALUE self, VALUE output)
+{
+    struct parser_params *p;
+
+    TypedData_Get_Struct(self, struct parser_params, &parser_data_type, p);
+    return p->debug_output = output;
 }
 
 #ifndef RIPPER
@@ -11900,6 +11930,8 @@ InitVM_ripper(void)
     rb_define_method(Ripper, "encoding", rb_parser_encoding, 0);
     rb_define_method(Ripper, "yydebug", rb_parser_get_yydebug, 0);
     rb_define_method(Ripper, "yydebug=", rb_parser_set_yydebug, 1);
+    rb_define_method(Ripper, "debug_output", rb_parser_get_debug_output, 0);
+    rb_define_method(Ripper, "debug_output=", rb_parser_set_debug_output, 1);
     rb_define_method(Ripper, "error?", ripper_error_p, 0);
 #ifdef RIPPER_DEBUG
     rb_define_method(rb_mKernel, "assert_Qundef", ripper_assert_Qundef, 2);

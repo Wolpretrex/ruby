@@ -1114,7 +1114,7 @@ ary_take_first_or_last(int argc, const VALUE *argv, VALUE ary, enum ary_take_pos
     long offset = 0;
 
     argc = rb_check_arity(argc, 0, 1);
-    /* the case optional argument is ommited should be handled in
+    /* the case optional argument is omitted should be handled in
      * callers of this function.  if another arity case is added,
      * this arity check needs to rewrite. */
     RUBY_ASSERT_WHEN(TRUE, argc == 1);
@@ -4735,7 +4735,7 @@ rb_ary_union_multi(int argc, VALUE *argv, VALUE ary)
  *     ary.max(n) {|a, b| block}   -> array
  *
  *  Returns the object in _ary_ with the maximum value. The
- *  first form assumes all objects implement <code>Comparable</code>;
+ *  first form assumes all objects implement Comparable;
  *  the second uses the block to return <em>a <=> b</em>.
  *
  *     ary = %w(albatross dog horse)
@@ -4788,7 +4788,7 @@ rb_ary_max(int argc, VALUE *argv, VALUE ary)
  *     ary.min(n) {| a,b | block } -> array
  *
  *  Returns the object in _ary_ with the minimum value. The
- *  first form assumes all objects implement <code>Comparable</code>;
+ *  first form assumes all objects implement Comparable;
  *  the second uses the block to return <em>a <=> b</em>.
  *
  *     ary = %w(albatross dog horse)
