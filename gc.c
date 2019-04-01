@@ -1148,7 +1148,16 @@ gc_object_moved_p(rb_objspace_t * objspace, VALUE obj)
     if (RB_SPECIAL_CONST_P(obj)) {
 	return FALSE;
     } else {
-	return BUILTIN_TYPE(obj) == T_MOVED;
+	void *poisoned = poisoned_object_p(obj);
+	unpoison_object(obj, false);
+
+	int ret =  BUILTIN_TYPE(obj) == T_MOVED;
+	/* Re-poison slot if it's not the one we want */
+	if (poisoned) {
+	    GC_ASSERT(BUILTIN_TYPE(obj) == T_NONE);
+	    poison_object(obj);
+	}
+	return ret;
     }
 }
 
@@ -1471,9 +1480,12 @@ static inline void
 heap_page_add_freeobj(rb_objspace_t *objspace, struct heap_page *page, VALUE obj)
 {
     RVALUE *p = (RVALUE *)obj;
+    unpoison_memory_region(&page->freelist, sizeof(RVALUE*), false);
+
     p->as.free.flags = 0;
     p->as.free.next = page->freelist;
     page->freelist = p;
+    __asan_poison_memory_region(&page->freelist, sizeof(RVALUE*));
 
     if (RGENGC_CHECK_MODE && !is_pointer_to_heap(objspace, p)) {
 	rb_bug("heap_page_add_freeobj: %p is not rvalue.", (void *)p);
@@ -4302,16 +4314,6 @@ gc_mark_and_pin_values(rb_objspace_t *objspace, long n, const VALUE *values)
     }
 }
 
-static void
-gc_mark_values(rb_objspace_t *objspace, long n, const VALUE *values)
-{
-    long i;
-
-    for (i=0; i<n; i++) {
-	gc_mark(objspace, values[i]);
-    }
-}
-
 void
 rb_gc_mark_values(long n, const VALUE *values)
 {
@@ -4619,6 +4621,7 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
 	    gc_mark_ptr(objspace, obj);
 	}
         if (ptr) {
+	    GC_ASSERT(BUILTIN_TYPE(obj) == T_NONE);
             poison_object(obj);
         }
     }
@@ -7178,8 +7181,11 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     RVALUE *src = (RVALUE *)scan;
 
 #if RGENGC_CHECK_MODE >= 5
-    fprintf(stderr, "moving: %s -> ", obj_info(src));
+    fprintf(stderr, "moving: %s -> %p", obj_info(src), free);
 #endif
+
+    GC_ASSERT(BUILTIN_TYPE(scan) != T_NONE);
+    GC_ASSERT(BUILTIN_TYPE(free) == T_NONE);
 
     /* Save off bits for current object. */
     marked = rb_objspace_marked_object_p((VALUE)src);
@@ -7244,10 +7250,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     /* Assign forwarding address */
     src->as.moved.flags = T_MOVED;
     src->as.moved.destination = (VALUE)dest;
-
-#if RGENGC_CHECK_MODE >= 5
-    fprintf(stderr, "%s\n", obj_info(dest));
-#endif
+    GC_ASSERT(BUILTIN_TYPE((VALUE)dest) != T_NONE);
 }
 
 struct heap_cursor {
@@ -7260,8 +7263,6 @@ struct heap_cursor {
 static void
 advance_cursor(struct heap_cursor *free, struct heap_page **page_list)
 {
-    rb_objspace_t *objspace = free->objspace;
-
     if (free->slot == free->page->start + free->page->total_slots - 1) {
 	free->index++;
 	free->page = page_list[free->index];
@@ -7274,8 +7275,6 @@ advance_cursor(struct heap_cursor *free, struct heap_page **page_list)
 static void
 retreat_cursor(struct heap_cursor *scan, struct heap_page **page_list)
 {
-    rb_objspace_t *objspace = scan->objspace;
-
     if (scan->slot == scan->page->start) {
 	scan->index--;
 	scan->page = page_list[scan->index];
@@ -7323,8 +7322,16 @@ int count_pinned(struct heap_page *page)
 
     VALUE v = (VALUE)pstart;
     for(; v != (VALUE)pend; v += sizeof(RVALUE)) {
+	void *poisoned = poisoned_object_p(v);
+	unpoison_object(v, false);
+
 	if (RBASIC(v)->flags && RVALUE_PINNED(v)) {
 	    pinned++;
+	}
+
+	if (poisoned) {
+	    GC_ASSERT(BUILTIN_TYPE(v) == T_NONE);
+	    poison_object(v);
 	}
     }
 
@@ -7343,7 +7350,6 @@ gc_compact_heap(rb_objspace_t *objspace)
 {
     struct heap_cursor free_cursor;
     struct heap_cursor scan_cursor;
-    int number_considered;
     struct heap_page **page_list;
 
     memset(objspace->rcompactor.considered_count_table, 0, T_MASK * sizeof(size_t));
@@ -7357,20 +7363,63 @@ gc_compact_heap(rb_objspace_t *objspace)
 
     /* Two finger algorithm */
     while (not_met(&free_cursor, &scan_cursor)) {
+	/* Free cursor movement */
+
+	/* Unpoison free_cursor slot */
+	void *free_slot_poison = poisoned_object_p(free_cursor.slot);
+	unpoison_object(free_cursor.slot, false);
+
 	while(BUILTIN_TYPE(free_cursor.slot) != T_NONE && not_met(&free_cursor, &scan_cursor)) {
+	    /* Re-poison slot if it's not the one we want */
+	    if (free_slot_poison) {
+		GC_ASSERT(BUILTIN_TYPE(free_cursor.slot) == T_NONE);
+		poison_object(free_cursor.slot);
+	    }
+
 	    advance_cursor(&free_cursor, page_list);
+
+	    /* Unpoison free_cursor slot */
+	    free_slot_poison = poisoned_object_p(free_cursor.slot);
+	    unpoison_object(free_cursor.slot, false);
 	}
 
+	/* Unpoison scan_cursor slot */
+	void *scan_slot_poison = poisoned_object_p(scan_cursor.slot);
+	unpoison_object(scan_cursor.slot, false);
+
+	/* Scan cursor movement */
 	objspace->rcompactor.considered_count_table[BUILTIN_TYPE((VALUE)scan_cursor.slot)]++;
 
 	while(!gc_is_moveable_obj(objspace, (VALUE)scan_cursor.slot) && not_met(&free_cursor, &scan_cursor)) {
+
+	    /* Re-poison slot if it's not the one we want */
+	    if (scan_slot_poison) {
+		GC_ASSERT(BUILTIN_TYPE(scan_cursor.slot) == T_NONE);
+		poison_object(scan_cursor.slot);
+	    }
+
 	    retreat_cursor(&scan_cursor, page_list);
+
+	    /* Unpoison scan_cursor slot */
+	    scan_slot_poison = poisoned_object_p(scan_cursor.slot);
+	    unpoison_object(scan_cursor.slot, false);
+
 	    objspace->rcompactor.considered_count_table[BUILTIN_TYPE((VALUE)scan_cursor.slot)]++;
 	}
 
 	if (not_met(&free_cursor, &scan_cursor)) {
 	    objspace->rcompactor.moved_count_table[BUILTIN_TYPE((VALUE)scan_cursor.slot)]++;
+
+	    GC_ASSERT(BUILTIN_TYPE(free_cursor.slot) == T_NONE);
+	    GC_ASSERT(BUILTIN_TYPE(scan_cursor.slot) != T_NONE);
+	    GC_ASSERT(BUILTIN_TYPE(scan_cursor.slot) != T_MOVED);
+
 	    gc_move(objspace, (VALUE)scan_cursor.slot, (VALUE)free_cursor.slot);
+
+	    GC_ASSERT(BUILTIN_TYPE(free_cursor.slot) != T_MOVED);
+	    GC_ASSERT(BUILTIN_TYPE(free_cursor.slot) != T_NONE);
+	    GC_ASSERT(BUILTIN_TYPE(scan_cursor.slot) == T_MOVED);
+
 	    advance_cursor(&free_cursor, page_list);
 	    retreat_cursor(&scan_cursor, page_list);
 	}
@@ -7398,24 +7447,27 @@ gc_ref_update_array(rb_objspace_t * objspace, VALUE v)
 static void
 gc_ref_update_object(rb_objspace_t * objspace, VALUE v)
 {
-    uint32_t i, len = ROBJECT_NUMIV(v);
     VALUE *ptr = ROBJECT_IVPTR(v);
-    for (i = 0; i < len; i++) {
-	UPDATE_IF_MOVED(objspace, ptr[i]);
+
+    if (ptr) {
+	uint32_t i, len = ROBJECT_NUMIV(v);
+	for (i = 0; i < len; i++) {
+	    UPDATE_IF_MOVED(objspace, ptr[i]);
+	}
     }
 }
 
 static int
 hash_replace_ref(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
 {
-    rb_objspace_t *objspace;
+    rb_objspace_t *objspace = (rb_objspace_t *)argp;
 
-    if(!SPECIAL_CONST_P((void *)*key) && BUILTIN_TYPE(*key) == T_MOVED) {
-	*key = (VALUE)RMOVED(*key)->destination;
+    if(gc_object_moved_p(objspace, (VALUE)*key)) {
+	*key = rb_gc_new_location((VALUE)*key);
     }
 
-    if(!SPECIAL_CONST_P((void *)*value) && BUILTIN_TYPE(*value) == T_MOVED) {
-	*value = (VALUE)RMOVED(*value)->destination;
+    if(gc_object_moved_p(objspace, (VALUE)*value)) {
+	*value = rb_gc_new_location((VALUE)*value);
     }
 
     return ST_CONTINUE;
@@ -7428,11 +7480,11 @@ hash_foreach_replace(st_data_t key, st_data_t value, st_data_t argp, int error)
 
     objspace = (rb_objspace_t *)argp;
 
-    if(!SPECIAL_CONST_P((void *)key) && BUILTIN_TYPE(key) == T_MOVED) {
+    if(gc_object_moved_p(objspace, (VALUE)key)) {
 	return ST_REPLACE;
     }
 
-    if(!SPECIAL_CONST_P((void *)value) && BUILTIN_TYPE(value) == T_MOVED) {
+    if(gc_object_moved_p(objspace, (VALUE)value)) {
 	return ST_REPLACE;
     }
     return ST_CHECK;
@@ -7562,7 +7614,9 @@ gc_ref_update_imemo(rb_objspace_t *objspace, VALUE obj)
 static enum rb_id_table_iterator_result
 check_id_table_move(ID id, VALUE value, void *data)
 {
-    if(!SPECIAL_CONST_P((void *)value) && BUILTIN_TYPE(value) == T_MOVED) {
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
+
+    if(gc_object_moved_p(objspace, (VALUE)value)) {
 	return ID_TABLE_REPLACE;
     }
 
@@ -7574,18 +7628,39 @@ check_id_table_move(ID id, VALUE value, void *data)
 VALUE
 rb_gc_new_location(VALUE value)
 {
-    if(!SPECIAL_CONST_P((void *)value) && BUILTIN_TYPE(value) == T_MOVED) {
-	return (VALUE)RMOVED(value)->destination;
+
+    VALUE destination;
+
+    if(!SPECIAL_CONST_P((void *)value)) {
+	void *poisoned = poisoned_object_p(value);
+	unpoison_object(value, false);
+
+	if (BUILTIN_TYPE(value) == T_MOVED) {
+	    destination = (VALUE)RMOVED(value)->destination;
+	    assert(BUILTIN_TYPE(destination) != T_NONE);
+	} else {
+	    destination = value;
+	}
+
+	/* Re-poison slot if it's not the one we want */
+	if (poisoned) {
+	    GC_ASSERT(BUILTIN_TYPE(value) == T_NONE);
+	    poison_object(value);
+	}
     } else {
-	return value;
+	destination = value;
     }
+
+    return destination;
 }
 
 static enum rb_id_table_iterator_result
 update_id_table(ID *key, VALUE * value, void *data, int existing)
 {
-    if(!SPECIAL_CONST_P((void *)*value) && BUILTIN_TYPE(*value) == T_MOVED) {
-	*value = (VALUE)RMOVED(*value)->destination;
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
+
+    if(gc_object_moved_p(objspace, (VALUE)*value)) {
+	*value = rb_gc_new_location((VALUE)*value);
     }
 
     return ID_TABLE_CONTINUE;
@@ -7603,13 +7678,14 @@ static enum rb_id_table_iterator_result
 update_const_table(VALUE value, void *data)
 {
     rb_const_entry_t *ce = (rb_const_entry_t *)value;
+    rb_objspace_t * objspace = (rb_objspace_t *)data;
 
-    if(!SPECIAL_CONST_P((void *)ce->value) && BUILTIN_TYPE(ce->value) == T_MOVED) {
-	ce->value = (VALUE)RMOVED(ce->value)->destination;
+    if(gc_object_moved_p(objspace, ce->value)) {
+	ce->value = rb_gc_new_location(ce->value);
     }
 
-    if(!SPECIAL_CONST_P((void *)ce->file) && BUILTIN_TYPE(ce->file) == T_MOVED) {
-	ce->file = (VALUE)RMOVED(ce->file)->destination;
+    if(gc_object_moved_p(objspace, ce->file)) {
+	ce->file = rb_gc_new_location(ce->file);
     }
 
     return ID_TABLE_CONTINUE;
@@ -7806,15 +7882,18 @@ gc_ref_update(void *vstart, void *vend, size_t stride, void * data)
 
     /* For each object on the page */
     for(; v != (VALUE)vend; v += stride) {
-	if (SPECIAL_CONST_P(v)) {
-	} else if (BUILTIN_TYPE(v) == T_NONE) {
-	    heap_page_add_freeobj(objspace, page, v);
-	    free_slots++;
-	} else {
-	    if (RVALUE_WB_UNPROTECTED(v)) {
-		page->flags.has_uncollectible_shady_objects = TRUE;
+	if (!SPECIAL_CONST_P(v)) {
+	    unpoison_object(v, false);
+
+	    if (BUILTIN_TYPE(v) == T_NONE) {
+		heap_page_add_freeobj(objspace, page, v);
+		free_slots++;
+	    } else {
+		if (RVALUE_WB_UNPROTECTED(v)) {
+		    page->flags.has_uncollectible_shady_objects = TRUE;
+		}
+		gc_update_object_references(objspace, v);
 	    }
-	    gc_update_object_references(objspace, v);
 	}
     }
 
@@ -7876,11 +7955,13 @@ rb_gc_compact(VALUE mod)
 
     gc_compact_heap(objspace);
 
+    heap_eden->freelist = NULL;
     gc_update_references(objspace);
-    heap_eden->freelist	= NULL;
 
     rb_clear_method_cache_by_class(rb_cObject);
     rb_clear_constant_cache();
+    heap_eden->free_pages = NULL;
+    heap_eden->using_page = NULL;
 
     /* GC after compaction to eliminate T_MOVED */
     rb_gc();
@@ -7907,27 +7988,17 @@ rb_gc_compact(VALUE mod)
 static VALUE
 gc_verify_compaction_references(VALUE dummy)
 {
+    VALUE stats;
     rb_objspace_t *objspace = &rb_objspace;
 
     /* Double heap size */
     heap_add_pages(objspace, heap_eden, heap_allocated_pages);
 
-    /* Ensure objects are pinned */
-    rb_gc();
+    stats = rb_gc_compact(dummy);
 
-    /* Compact heap */
-    gc_compact_heap(objspace);
+    gc_verify_internal_consistency(dummy);
 
-    gc_update_references(objspace);
-
-    rb_clear_method_cache_by_class(rb_cObject);
-    rb_clear_constant_cache();
-
-    /* GC after compaction to eliminate T_MOVED */
-    rb_gc();
-    gc_verify_internal_consistency(Qnil);
-
-    return rb_gc_compact_stats(dummy);
+    return stats;
 }
 
 VALUE
@@ -10600,6 +10671,7 @@ type_name(int type, VALUE obj)
 	    TYPE_NAME(T_UNDEF);
 	    TYPE_NAME(T_IMEMO);
 	    TYPE_NAME(T_ICLASS);
+	    TYPE_NAME(T_MOVED);
 	    TYPE_NAME(T_ZOMBIE);
       case T_DATA:
 	if (obj && rb_objspace_data_type_name(obj)) {
@@ -10747,6 +10819,10 @@ rb_raw_obj_info(char *buff, const int buff_size, VALUE obj)
 	    break;
 	  case T_STRING: {
 	    snprintf(buff, buff_size, "%s %s", buff, RSTRING_PTR(obj));
+	    break;
+	  }
+	  case T_MOVED: {
+	    snprintf(buff, buff_size, "-> %p", (void*)rb_gc_new_location(obj));
 	    break;
 	  }
           case T_HASH: {
