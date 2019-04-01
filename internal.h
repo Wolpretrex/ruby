@@ -132,6 +132,13 @@ poison_object(VALUE obj)
     poison_memory_region(ptr, SIZEOF_VALUE);
 }
 
+static inline void *
+poisoned_object_p(VALUE obj)
+{
+    struct RVALUE *ptr = (void *)obj;
+    return __asan_region_is_poisoned(ptr, SIZEOF_VALUE);
+}
+
 static inline void
 unpoison_memory_region(const volatile void *ptr, size_t size, bool malloc_p)
 {
