@@ -4137,11 +4137,13 @@ free_stack_chunks(mark_stack_t *stack)
 static void
 push_mark_stack(mark_stack_t *stack, VALUE data)
 {
+#ifdef GC_COMPACT_DEBUG
     if (BUILTIN_TYPE(data) == T_MOVED) {
-	VALUE dest = (VALUE)RMOVED(data)->destination;
+	VALUE dest = rb_gc_new_location(data);
 	fprintf(stderr, "<%s>", obj_info(dest));
 	rb_bug("moved item (%p -> %p (type: %d) should not be marked", (RVALUE *)data, (RVALUE *)dest, BUILTIN_TYPE(dest));
     }
+#endif
     if (stack->index == stack->limit) {
         push_mark_stack_chunk(stack);
     }
