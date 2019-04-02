@@ -805,6 +805,8 @@ transient_heap_block_update_refs(struct transient_heap* theap, struct transient_
         void *ptr = &block->buff[i];
         struct transient_alloc_header *header = ptr;
 
+	unpoison_memory_region(header, sizeof *header, false);
+
 	void *poisoned = __asan_region_is_poisoned(header->obj, SIZEOF_VALUE);
 	unpoison_object(header->obj, false);
 
@@ -815,6 +817,7 @@ transient_heap_block_update_refs(struct transient_heap* theap, struct transient_
 	}
 
         i += header->size;
+	poison_memory_region(header, sizeof *header);
         n++;
     }
 }

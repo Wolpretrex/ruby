@@ -7179,6 +7179,8 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
     switch(BUILTIN_TYPE(obj)) {
 	case T_NONE:
 	case T_NIL:
+	case T_MOVED:
+	case T_ZOMBIE:
 	    return FALSE;
 	    break;
 	case T_STRING:
@@ -7388,7 +7390,7 @@ int count_pinned(struct heap_page *page)
     return pinned;
 }
 
-int compare_pinned(const void *left, const void *right)
+int compare_pinned(const void *left, const void *right, void *dummy)
 {
     int left_count = count_pinned(*(struct heap_page * const *)left);
     int right_count = count_pinned(*(struct heap_page * const *)right);
@@ -7407,7 +7409,7 @@ gc_compact_heap(rb_objspace_t *objspace)
 
     page_list = calloc(heap_allocated_pages, sizeof(struct heap_page *));
     memcpy(page_list, heap_pages_sorted, heap_allocated_pages * sizeof(struct heap_page *));
-    qsort(page_list, heap_allocated_pages, sizeof(struct heap_page *), compare_pinned);
+    ruby_qsort(page_list, heap_allocated_pages, sizeof(struct heap_page *), compare_pinned, NULL);
 
     init_cursors(objspace, &free_cursor, &scan_cursor, page_list);
 
