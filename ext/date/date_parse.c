@@ -1212,7 +1212,8 @@ parse_iso2(VALUE str, VALUE hash)
     return 1;
 }
 
-#define JAPANESE_ERA_INITIALS "mtsh"
+#define JISX0301_ERA_INITIALS "mtsh"
+#define JISX0301_DEFAULT_ERA 'H' /* obsolete */
 
 static int
 gengo(int c)
@@ -1254,11 +1255,11 @@ parse_jis(VALUE str, VALUE hash)
 {
     static const char pat_source[] =
 #ifndef TIGHT_PARSER
-        "\\b([" JAPANESE_ERA_INITIALS "])(\\d+)\\.(\\d+)\\.(\\d+)"
+        "\\b([" JISX0301_ERA_INITIALS "])(\\d+)\\.(\\d+)\\.(\\d+)"
 #else
 	BOS
 	FPW_COM FPT_COM
-        "([" JAPANESE_ERA_INITIALS "])(\\d+)\\.(\\d+)\\.(\\d+)"
+        "([" JISX0301_ERA_INITIALS "])(\\d+)\\.(\\d+)\\.(\\d+)"
 	TEE_FPT COM_FPW
 	EOS
 #endif
@@ -2177,7 +2178,7 @@ date__parse(VALUE str, VALUE comp)
 #endif
 
     {
-	if (RTEST(ref_hash("_bc"))) {
+        if (RTEST(del_hash("_bc"))) {
 	    VALUE y;
 
 	    y = ref_hash("cwyear");
@@ -2192,7 +2193,7 @@ date__parse(VALUE str, VALUE comp)
 	    }
 	}
 
-	if (RTEST(ref_hash("_comp"))) {
+        if (RTEST(del_hash("_comp"))) {
 	    VALUE y;
 
 	    y = ref_hash("cwyear");
@@ -2214,9 +2215,6 @@ date__parse(VALUE str, VALUE comp)
 	}
 
     }
-
-    del_hash("_bc");
-    del_hash("_comp");
 
     {
 	VALUE zone = ref_hash("zone");
@@ -2956,7 +2954,7 @@ jisx0301_cb(VALUE m, VALUE hash)
 	    s[i] = rb_reg_nth_match(i, m);
     }
 
-    ep = gengo(NIL_P(s[1]) ? 'h' : *RSTRING_PTR(s[1]));
+    ep = gengo(NIL_P(s[1]) ? JISX0301_DEFAULT_ERA : *RSTRING_PTR(s[1]));
     set_hash("year", f_add(str2num(s[2]), INT2FIX(ep)));
     set_hash("mon", str2num(s[3]));
     set_hash("mday", str2num(s[4]));
@@ -2981,7 +2979,7 @@ static int
 jisx0301(VALUE str, VALUE hash)
 {
     static const char pat_source[] =
-        "\\A\\s*([" JAPANESE_ERA_INITIALS "])?(\\d{2})\\.(\\d{2})\\.(\\d{2})"
+        "\\A\\s*([" JISX0301_ERA_INITIALS "])?(\\d{2})\\.(\\d{2})\\.(\\d{2})"
 	"(?:t"
 	"(?:(\\d{2}):(\\d{2})(?::(\\d{2})(?:[,.](\\d*))?)?"
 	"(z|[-+]\\d{2}(?::?\\d{2})?)?)?)?\\s*\\z";
