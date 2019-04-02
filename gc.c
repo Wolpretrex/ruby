@@ -4349,7 +4349,8 @@ gc_mark_and_pin_stack_values(rb_objspace_t *objspace, long n, const VALUE *value
     long i;
 
     for (i=0; i<n; i++) {
-	if (is_markable_object(objspace, values[i])) {
+	/* skip MOVED objects that are on the stack */
+	if (is_markable_object(objspace, values[i]) && T_MOVED != BUILTIN_TYPE(values[i])) {
 	    gc_mark_and_pin(objspace, values[i]);
 	}
     }
@@ -4618,13 +4619,11 @@ gc_mark_and_pin_maybe(rb_objspace_t *objspace, VALUE obj)
 
         unpoison_object(obj, false);
 	type = BUILTIN_TYPE(obj);
-	GC_ASSERT(type != T_MOVED);
-	if (type != T_ZOMBIE && type != T_NONE) {
+	if (type != T_MOVED && type != T_ZOMBIE && type != T_NONE) {
 	    gc_pin(objspace, obj);
 	    gc_mark_ptr(objspace, obj);
 	}
         if (ptr) {
-	    GC_ASSERT(BUILTIN_TYPE(obj) == T_NONE);
             poison_object(obj);
         }
     }
@@ -4640,7 +4639,6 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
 
         unpoison_object(obj, false);
         type = BUILTIN_TYPE(obj);
-	GC_ASSERT(type != T_MOVED);
 	if (type != T_ZOMBIE && type != T_NONE) {
 	    gc_mark_ptr(objspace, obj);
 	}
