@@ -1,15 +1,23 @@
 # frozen_string_literal: true
 require 'test/unit'
-require '-test-/memory_location'
+require 'fiddle'
 
 class TestGCCompact < Test::Unit::TestCase
-  def test_works
-    assert Object.new.memory_location
+  if Fiddle::SIZEOF_LONG == Fiddle::SIZEOF_VOIDP
+    def memory_location(obj)
+      (Fiddle.dlwrap(obj) >> 1)
+    end
+  elsif Fiddle::SIZEOF_LONG_LONG == Fiddle::SIZEOF_VOIDP
+    def memory_location(obj)
+      (Fiddle.dlwrap(obj) >> 1) / 2
+    end
+  else
+    raise "Not supported"
   end
 
   def assert_object_ids(list)
     same_count = list.find_all { |obj|
-      obj.memory_location == obj.object_id
+      memory_location(obj) == obj.object_id
     }.count
     list.count - same_count
   end
@@ -25,7 +33,7 @@ class TestGCCompact < Test::Unit::TestCase
 
     loop do
       new_object = Object.new
-      if addresses.include? new_object.memory_location
+      if addresses.include? memory_location(new_object)
         break
       end
     end
@@ -37,7 +45,7 @@ class TestGCCompact < Test::Unit::TestCase
     list_of_objects = big_list
 
     ids       = list_of_objects.map(&:object_id) # store id in map
-    addresses = list_of_objects.map(&:memory_location)
+    addresses = list_of_objects.map(&self.:memory_location)
 
     # All object ids should be equal
     assert_equal 0, assert_object_ids(list_of_objects) # should be 0
@@ -56,7 +64,7 @@ class TestGCCompact < Test::Unit::TestCase
     assert new_tenant
 
     # This is the object that used to be in new_object's position
-    previous_tenant = list_of_objects[addresses.index(new_tenant.memory_location)]
+    previous_tenant = list_of_objects[addresses.index(memory_location(new_tenant))]
 
     assert_not_equal previous_tenant.object_id, new_tenant.object_id
 
@@ -74,7 +82,7 @@ class TestGCCompact < Test::Unit::TestCase
   def test_many_collisions
     list_of_objects = big_list
     ids       = list_of_objects.map(&:object_id)
-    addresses = list_of_objects.map(&:memory_location)
+    addresses = list_of_objects.map(&self.:memory_location)
 
     GC.compact
 
