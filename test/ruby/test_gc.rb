@@ -9,23 +9,6 @@ class TestGc < Test::Unit::TestCase
     end
   end
 
-  def test_objects_move
-    # It's possible that objects may not move, so try a few times
-    5.times do
-      # Allocate many objects
-      x = 1000.times.map { Object.new }
-      addrs = x.map { |o| Fiddle.dlwrap o } # get the addresses for these objects
-      GC.compact
-      addrs2 = x.map { |o| Fiddle.dlwrap o }
-      begin
-        assert_not_equal addrs, addrs2
-        return
-      rescue Minitest::Assertion
-      end
-    end
-    flunk "Objects didn't move"
-  end
-
   def test_gc
     prev_stress = GC.stress
     GC.stress = false
