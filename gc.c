@@ -4610,27 +4610,7 @@ rb_mark_tbl_no_pin(st_table *tbl)
 }
 
 static void
-gc_mark_and_pin_maybe(rb_objspace_t *objspace, VALUE obj)
-{
-    (void)VALGRIND_MAKE_MEM_DEFINED(&obj, sizeof(obj));
-    if (is_pointer_to_heap(objspace, (void *)obj)) {
-        int type;
-        void *ptr = __asan_region_is_poisoned((void *)obj, SIZEOF_VALUE);
-
-        unpoison_object(obj, false);
-	type = BUILTIN_TYPE(obj);
-	if (type != T_MOVED && type != T_ZOMBIE && type != T_NONE) {
-	    gc_pin(objspace, obj);
-	    gc_mark_ptr(objspace, obj);
-	}
-        if (ptr) {
-            poison_object(obj);
-        }
-    }
-}
-
-static void
-gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
+gc_mark_maybe_(rb_objspace_t *objspace, VALUE obj, int pin)
 {
     (void)VALGRIND_MAKE_MEM_DEFINED(&obj, sizeof(obj));
     if (is_pointer_to_heap(objspace, (void *)obj)) {
@@ -4639,7 +4619,11 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
 
         unpoison_object(obj, false);
         type = BUILTIN_TYPE(obj);
-	if (type != T_ZOMBIE && type != T_NONE) {
+	/* Garbage can live on the stack, so do not mark or pin */
+	if (type != T_MOVED && type != T_ZOMBIE && type != T_NONE) {
+	    if (pin) {
+		gc_pin(objspace, obj);
+	    }
 	    gc_mark_ptr(objspace, obj);
 	}
         if (ptr) {
@@ -4647,6 +4631,17 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
             poison_object(obj);
         }
     }
+}
+static void
+gc_mark_and_pin_maybe(rb_objspace_t *objspace, VALUE obj)
+{
+    gc_mark_maybe_(objspace, obj, TRUE);
+}
+
+static void
+gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
+{
+    gc_mark_maybe_(objspace, obj, FALSE);
 }
 
 void
