@@ -2258,16 +2258,18 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
+        VALUE id;
+
 	rb_free_generic_ivar((VALUE)obj);
 	FL_UNSET(obj, FL_EXIVAR);
-    }
-    VALUE id;
-    if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
+
+        if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
 #ifdef GC_COMPACT_DEBUG
-	fprintf(stderr, "Collecting %p -> %p\n", obj, obj_id_to_ref(id));
+            fprintf(stderr, "Collecting %p -> %p\n", obj, obj_id_to_ref(id));
 #endif
-	st_delete(obj_to_id_tbl, (st_data_t *)&obj, 0);
-	st_delete(id_to_obj_tbl, (st_data_t *)&id, 0);
+            st_delete(obj_to_id_tbl, (st_data_t *)&obj, 0);
+            st_delete(id_to_obj_tbl, (st_data_t *)&id, 0);
+        }
     }
 
 #if USE_RGENGC
@@ -3409,6 +3411,7 @@ rb_obj_id(VALUE obj)
 #endif
 		st_insert(obj_to_id_tbl, (st_data_t)obj, id);
 		st_insert(id_to_obj_tbl, (st_data_t)id, obj);
+                FL_SET(obj, FL_EXIVAR);
 		return id;
 	    }
 	}
