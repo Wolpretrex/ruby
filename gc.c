@@ -2258,10 +2258,14 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
-        VALUE id;
-
 	rb_free_generic_ivar((VALUE)obj);
 	FL_UNSET(obj, FL_EXIVAR);
+    }
+
+    if (FL_TEST(obj, FL_FINALIZE)) {
+        VALUE id;
+
+	FL_UNSET(obj, FL_FINALIZE);
 
         if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
 #ifdef GC_COMPACT_DEBUG
@@ -2549,7 +2553,10 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_FINALIZE)) {
-	make_zombie(objspace, obj, 0, 0);
+        /* "object_id" objects will not have a block to call */
+        if (st_lookup(finalizer_table, obj, 0)) {
+            make_zombie(objspace, obj, 0, 0);
+        }
 	return 1;
     }
     else {
@@ -3411,7 +3418,7 @@ rb_obj_id(VALUE obj)
 #endif
 		st_insert(obj_to_id_tbl, (st_data_t)obj, id);
 		st_insert(id_to_obj_tbl, (st_data_t)id, obj);
-                FL_SET(obj, FL_EXIVAR);
+                FL_SET(obj, FL_FINALIZE);
 		return id;
 	    }
 	}
@@ -5564,6 +5571,8 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride, v
 	    /* count objects */
 	    data->live_object_count++;
 
+            /* Normally, we don't expect T_MOVED objects to be in the heap.
+             * But they can stay alive on the stack, */
 	    if (!gc_object_moved_p(objspace, obj)) {
 		/* moved slots don't have children */
 		rb_objspace_reachable_objects_from(obj, check_children_i, (void *)data);
