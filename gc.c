@@ -2268,9 +2268,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	FL_UNSET(obj, FL_FINALIZE);
 
         if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
-#ifdef GC_COMPACT_DEBUG
-            fprintf(stderr, "Collecting %p -> %p\n", obj, obj_id_to_ref(id));
-#endif
+            gc_report(4, objspace, "Collecting %p -> %p\n", (void *)obj, (void *)obj_id_to_ref(id));
             st_delete(obj_to_id_tbl, (st_data_t *)&obj, 0);
             st_delete(id_to_obj_tbl, (st_data_t *)&id, 0);
         }
@@ -3396,9 +3394,7 @@ rb_obj_id(VALUE obj)
     VALUE id;
 
     if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
-#ifdef GC_COMPACT_DEBUG
-	fprintf(stderr, "Second time object_id was called on this object: %p\n", obj);
-#endif
+	gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p\n", (void*)obj);
 	return id;
     } else {
 	id = nonspecial_obj_id(obj);
@@ -3406,16 +3402,12 @@ rb_obj_id(VALUE obj)
 	while(1) {
 	    /* id is the object id */
 	    if (st_lookup(id_to_obj_tbl, (st_data_t)id, 0)) {
-#ifdef GC_COMPACT_DEBUG
-		fprintf(stderr, "object_id called on %p, but there was a collision at %d\n", obj, NUM2INT(id));
-#endif
+		gc_report(4, &rb_objspace, "object_id called on %p, but there was a collision at %d\n", (void*)obj, NUM2INT(id));
 		rb_objspace_t *objspace = &rb_objspace;
 		objspace->profile.object_id_collisions++;
 		id += 40;
 	    } else {
-#ifdef GC_COMPACT_DEBUG
-		fprintf(stderr, "Initial insert: %p id: %d\n", obj, NUM2INT(id));
-#endif
+		gc_report(4, &rb_objspace, "Initial insert: %p id: %d\n", (void*)obj, NUM2INT(id));
 		st_insert(obj_to_id_tbl, (st_data_t)obj, id);
 		st_insert(id_to_obj_tbl, (st_data_t)id, obj);
                 FL_SET(obj, FL_FINALIZE);
@@ -7249,9 +7241,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     RVALUE *dest = (RVALUE *)free;
     RVALUE *src = (RVALUE *)scan;
 
-#if RGENGC_CHECK_MODE >= 5
-    fprintf(stderr, "moving: %s -> %p", obj_info(src), free);
-#endif
+    gc_report(4, objspace, "Moving object: %s -> %p\n", obj_info(scan), (void *)free);
 
     GC_ASSERT(BUILTIN_TYPE(scan) != T_NONE);
     GC_ASSERT(BUILTIN_TYPE(free) == T_NONE);
@@ -7279,9 +7269,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free)
     /* If the source object's object_id has been seen, we need to update
      * the object to object id mapping. */
     if(st_lookup(obj_to_id_tbl, (VALUE)src, &id)) {
-#ifdef GC_COMPACT_DEBUG
-	fprintf(stderr, "Moving insert: %p -> %p\n", src, dest);
-#endif
+	gc_report(4, objspace, "Moving object with seen id: %p -> %p\n", (void *)src, (void *)dest);
 	st_delete(obj_to_id_tbl, (st_data_t *)&src, 0);
 	st_insert(obj_to_id_tbl, (VALUE)dest, id);
 	st_update(id_to_obj_tbl, (st_data_t)id, update_id_to_obj, (st_data_t)dest);
@@ -7435,26 +7423,26 @@ gc_compact_heap(rb_objspace_t *objspace)
 	/* Free cursor movement */
 
 	/* Unpoison free_cursor slot */
-	void *free_slot_poison = poisoned_object_p(free_cursor.slot);
-	unpoison_object(free_cursor.slot, false);
+	void *free_slot_poison = poisoned_object_p((VALUE)free_cursor.slot);
+	unpoison_object((VALUE)free_cursor.slot, false);
 
 	while(BUILTIN_TYPE(free_cursor.slot) != T_NONE && not_met(&free_cursor, &scan_cursor)) {
 	    /* Re-poison slot if it's not the one we want */
 	    if (free_slot_poison) {
 		GC_ASSERT(BUILTIN_TYPE(free_cursor.slot) == T_NONE);
-		poison_object(free_cursor.slot);
+		poison_object((VALUE)free_cursor.slot);
 	    }
 
 	    advance_cursor(&free_cursor, page_list);
 
 	    /* Unpoison free_cursor slot */
-	    free_slot_poison = poisoned_object_p(free_cursor.slot);
-	    unpoison_object(free_cursor.slot, false);
+	    free_slot_poison = poisoned_object_p((VALUE)free_cursor.slot);
+	    unpoison_object((VALUE)free_cursor.slot, false);
 	}
 
 	/* Unpoison scan_cursor slot */
-	void *scan_slot_poison = poisoned_object_p(scan_cursor.slot);
-	unpoison_object(scan_cursor.slot, false);
+	void *scan_slot_poison = poisoned_object_p((VALUE)scan_cursor.slot);
+	unpoison_object((VALUE)scan_cursor.slot, false);
 
 	/* Scan cursor movement */
 	objspace->rcompactor.considered_count_table[BUILTIN_TYPE((VALUE)scan_cursor.slot)]++;
@@ -7464,14 +7452,14 @@ gc_compact_heap(rb_objspace_t *objspace)
 	    /* Re-poison slot if it's not the one we want */
 	    if (scan_slot_poison) {
 		GC_ASSERT(BUILTIN_TYPE(scan_cursor.slot) == T_NONE);
-		poison_object(scan_cursor.slot);
+		poison_object((VALUE)scan_cursor.slot);
 	    }
 
 	    retreat_cursor(&scan_cursor, page_list);
 
 	    /* Unpoison scan_cursor slot */
-	    scan_slot_poison = poisoned_object_p(scan_cursor.slot);
-	    unpoison_object(scan_cursor.slot, false);
+	    scan_slot_poison = poisoned_object_p((VALUE)scan_cursor.slot);
+	    unpoison_object((VALUE)scan_cursor.slot, false);
 
 	    objspace->rcompactor.considered_count_table[BUILTIN_TYPE((VALUE)scan_cursor.slot)]++;
 	}
@@ -7789,9 +7777,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
 {
     RVALUE *any = RANY(obj);
 
-#if RGENGC_CHECK_MODE >= 5
-    fprintf(stderr, "update-refs: %s -> ", obj_info(obj));
-#endif
+    gc_report(4, objspace, "update-refs: %s ->", obj_info(obj));
 
     switch(BUILTIN_TYPE(obj)) {
 	case T_CLASS:
@@ -7932,9 +7918,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
 
     UPDATE_IF_MOVED(objspace, RBASIC(obj)->klass);
 
-#if RGENGC_CHECK_MODE >= 5
-    fprintf(stderr, "%s\n", obj_info(obj));
-#endif
+    gc_report(4, objspace, "update-refs: %s <-", obj_info(obj));
 }
 static int
 gc_ref_update(void *vstart, void *vend, size_t stride, void * data)
