@@ -183,14 +183,34 @@ class TestJIT < Test::Unit::TestCase
     assert_compile_once('2', result_inspect: '2', insns: %i[putobject])
   end
 
-  def test_compile_insn_putspecialobject_putiseq
-    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: 'hellohello', success_count: 2, insns: %i[putspecialobject putiseq])
+  def test_compile_insn_definemethod_definesmethod
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: 'helloworld', success_count: 3, insns: %i[definemethod definesmethod])
     begin;
-      print 2.times.map {
+      print 1.times.map {
         def method_definition
           'hello'
         end
-        method_definition
+
+        def self.smethod_definition
+          'world'
+        end
+
+        method_definition + smethod_definition
+      }.join
+    end;
+  end
+
+  def test_compile_insn_putspecialobject
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: 'a', success_count: 2, insns: %i[putspecialobject])
+    begin;
+      print 1.times.map {
+        def a
+          'a'
+        end
+
+        alias :b :a
+
+        b
       }.join
     end;
   end
@@ -698,9 +718,11 @@ class TestJIT < Test::Unit::TestCase
         end
       end
 
+      verbose, $VERBOSE = $VERBOSE, false # suppress "instance variable @b not initialized"
       print(Foo.new.bar)
       print(Foo.new.bar)
       print(Foo.new.bar)
+      $VERBOSE = verbose
     end;
   end
 
@@ -729,10 +751,8 @@ class TestJIT < Test::Unit::TestCase
       p(a.undefined)
 
       # redefinition
-      class A
-        def test
-          3
-        end
+      def a.test
+        3
       end
 
       print(2 * a.test)
@@ -952,8 +972,10 @@ class TestJIT < Test::Unit::TestCase
     insns = []
     RubyVM::InstructionSequence.compile(script).to_a.last.each do |(insn, *args)|
       case insn
-      when :putiseq, :send
+      when :send
         insns += collect_insns(args.last)
+      when :definemethod, :definesmethod
+        insns += collect_insns(args[1])
       when :defineclass
         insns += collect_insns(args[1])
       end
@@ -968,7 +990,7 @@ class TestJIT < Test::Unit::TestCase
     insns = iseq_array.last.select { |x| x.is_a?(Array) }.map(&:first)
     iseq_array.last.each do |(insn, *args)|
       case insn
-      when :putiseq, :send
+      when :definemethod, :definesmethod, :send
         insns += collect_insns(args.last)
       end
     end

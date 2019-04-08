@@ -35,7 +35,7 @@ static VALUE r_cover_p(VALUE, VALUE, VALUE, VALUE);
 static void
 range_init(VALUE range, VALUE beg, VALUE end, VALUE exclude_end)
 {
-    if ((!FIXNUM_P(beg) || !FIXNUM_P(end)) && !NIL_P(end)) {
+    if ((!FIXNUM_P(beg) || !FIXNUM_P(end)) && !NIL_P(beg) && !NIL_P(end)) {
 	VALUE v;
 
 	v = rb_funcall(beg, id_cmp, 1, end);
@@ -230,7 +230,7 @@ range_hash(VALUE range)
     hash = rb_hash_uint(hash, EXCL(range) << 24);
     hash = rb_hash_end(hash);
 
-    return LONG2FIX(hash);
+    return ST2FIX(hash);
 }
 
 static void
@@ -397,7 +397,9 @@ range_step(int argc, VALUE *argv, VALUE range)
     step = (!rb_check_arity(argc, 0, 1) ? INT2FIX(1) : argv[0]);
 
     if (!rb_block_given_p()) {
-        if (rb_obj_is_kind_of(b, rb_cNumeric) && (NIL_P(e) || rb_obj_is_kind_of(e, rb_cNumeric))) {
+        const VALUE b_num_p = rb_obj_is_kind_of(b, rb_cNumeric);
+        const VALUE e_num_p = rb_obj_is_kind_of(e, rb_cNumeric);
+        if ((b_num_p && (NIL_P(e) || e_num_p)) || (NIL_P(b) && e_num_p)) {
             return rb_arith_seq_new(range, ID2SYM(rb_frame_this_func()), argc, argv,
                     range_step_size, b, e, step, EXCL(range));
         }
@@ -704,8 +706,8 @@ range_bsearch(VALUE range)
     }
 #if SIZEOF_DOUBLE == 8 && defined(HAVE_INT64_T)
     else if (RB_TYPE_P(beg, T_FLOAT) || RB_TYPE_P(end, T_FLOAT)) {
-	int64_t low  = double_as_int64(RFLOAT_VALUE(rb_Float(beg)));
-	int64_t high = double_as_int64(NIL_P(end) ? HUGE_VAL : RFLOAT_VALUE(rb_Float(end)));
+	int64_t low  = double_as_int64(NIL_P(beg) ? -HUGE_VAL : RFLOAT_VALUE(rb_Float(beg)));
+	int64_t high = double_as_int64(NIL_P(end) ?  HUGE_VAL : RFLOAT_VALUE(rb_Float(end)));
 	int64_t mid, org_high;
 	BSEARCH(int64_as_double_to_num);
     }
@@ -722,6 +724,18 @@ range_bsearch(VALUE range)
 	    BSEARCH_CHECK(mid);
 	    if (smaller) {
 		return bsearch_integer_range(beg, mid, 0);
+	    }
+	    diff = rb_funcall(diff, '*', 1, LONG2FIX(2));
+	}
+    }
+    else if (NIL_P(beg) && is_integer_p(end)) {
+	VALUE diff = LONG2FIX(-1);
+	RETURN_ENUMERATOR(range, 0, 0);
+	while (1) {
+	    VALUE mid = rb_funcall(end, '+', 1, diff);
+	    BSEARCH_CHECK(mid);
+	    if (!smaller) {
+		return bsearch_integer_range(mid, end, 0);
 	    }
 	    diff = rb_funcall(diff, '*', 1, LONG2FIX(2));
 	}
@@ -769,6 +783,9 @@ range_size(VALUE range)
         if (NIL_P(e)) {
             return DBL2NUM(HUGE_VAL);
         }
+    }
+    else if (NIL_P(b)) {
+        return DBL2NUM(HUGE_VAL);
     }
 
     return Qnil;
@@ -1230,7 +1247,7 @@ rb_range_beg_len(VALUE range, long *begp, long *lenp, long len, int err)
 
     if (!rb_range_values(range, &b, &e, &excl))
 	return Qfalse;
-    beg = NUM2LONG(b);
+    beg = NIL_P(b) ? 0 : NUM2LONG(b);
     end = NIL_P(e) ? -1 : NUM2LONG(e);
     if (NIL_P(e)) excl = 0;
     origbeg = beg;
@@ -1392,6 +1409,12 @@ range_include_internal(VALUE range, VALUE val)
 	    VALUE rb_str_include_range_p(VALUE beg, VALUE end, VALUE val, VALUE exclusive);
 	    return rb_str_include_range_p(beg, end, val, RANGE_EXCL(range));
 	}
+        else if (NIL_P(beg)) {
+	    VALUE r = rb_funcall(val, id_cmp, 1, end);
+	    if (NIL_P(r)) return Qfalse;
+	    if (rb_cmpint(r, val, end) <= 0) return Qtrue;
+	    return Qfalse;
+        }
 	else if (NIL_P(end)) {
 	    VALUE r = rb_funcall(beg, id_cmp, 1, val);
 	    if (NIL_P(r)) return Qfalse;
@@ -1463,8 +1486,9 @@ r_cover_range_p(VALUE range, VALUE beg, VALUE end, VALUE val)
     val_end = RANGE_END(val);
 
     if (!NIL_P(end) && NIL_P(val_end)) return FALSE;
-    if (!NIL_P(val_end) && r_less(val_beg, val_end) > -EXCL(val)) return FALSE;
-    if (!r_cover_p(range, beg, end, val_beg)) return FALSE;
+    if (!NIL_P(beg) && NIL_P(val_beg)) return FALSE;
+    if (!NIL_P(val_beg) && !NIL_P(val_end) && r_less(val_beg, val_end) > -EXCL(val)) return FALSE;
+    if (!NIL_P(val_beg) && !r_cover_p(range, beg, end, val_beg)) return FALSE;
 
     cmp_end = r_less(end, val_end);
 
@@ -1487,7 +1511,7 @@ r_cover_range_p(VALUE range, VALUE beg, VALUE end, VALUE val)
 static VALUE
 r_cover_p(VALUE range, VALUE beg, VALUE end, VALUE val)
 {
-    if (r_less(beg, val) <= 0) {
+    if (NIL_P(beg) || r_less(beg, val) <= 0) {
 	int excl = EXCL(range);
 	if (NIL_P(end) || r_less(val, end) <= -excl)
 	    return Qtrue;
@@ -1550,9 +1574,15 @@ range_alloc(VALUE klass)
  *     ('a'..'e').to_a    #=> ["a", "b", "c", "d", "e"]
  *     ('a'...'e').to_a   #=> ["a", "b", "c", "d"]
  *
- *  == Endless Ranges
+ *  == Beginless/Endless Ranges
  *
- *  An "endless range" represents a semi-infinite range.
+ *  A "beginless range" and "endless range" represents a semi-infinite
+ *  range.  Literal notation for a beginless range is:
+ *
+ *     (..1)
+ *     # or
+ *     (...1)
+ *
  *  Literal notation for an endless range is:
  *
  *     (1..)
@@ -1564,14 +1594,16 @@ range_alloc(VALUE klass)
  *     (1..nil)  # or similarly (1...nil)
  *     Range.new(1, nil) # or Range.new(1, nil, true)
  *
- *  Endless ranges are useful, for example, for idiomatic slicing of
- *  arrays:
+ *  Beginless/endless ranges are useful, for example, for idiomatic
+ *  slicing of arrays:
  *
+ *    [1, 2, 3, 4, 5][...2]   # => [1, 2]
  *    [1, 2, 3, 4, 5][2...]   # => [3, 4, 5]
  *
  *  Some implementation details:
  *
- *  * +end+ of endless range is +nil+;
+ *  * +begin+ of beginless range and +end+ of endless range are +nil+;
+ *  * +each+ of beginless range raises an exception;
  *  * +each+ of endless range enumerates infinite sequence (may be
  *    useful in combination with Enumerable#take_while or similar
  *    methods);

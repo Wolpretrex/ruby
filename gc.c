@@ -3517,6 +3517,7 @@ obj_memsize_of(VALUE obj, int use_all_types)
 	break;
       case T_RATIONAL:
       case T_COMPLEX:
+        break;
       case T_IMEMO:
 	if (imemo_type_p(obj, imemo_tmpbuf)) {
 	    size += RANY(obj)->as.imemo.alloc.cnt * sizeof(VALUE);

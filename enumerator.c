@@ -3029,6 +3029,9 @@ arith_seq_first(int argc, VALUE *argv, VALUE self)
     e = arith_seq_end(self);
     s = arith_seq_step(self);
     if (argc == 0) {
+        if (NIL_P(b)) {
+            return Qnil;
+        }
         if (!NIL_P(e)) {
             VALUE zero = INT2FIX(0);
             int r = rb_cmpint(rb_num_coerce_cmp(s, zero, idCmp), s, zero);
@@ -3342,7 +3345,7 @@ arith_seq_hash(VALUE self)
     hash = rb_hash_uint(hash, NUM2LONG(v));
     hash = rb_hash_end(hash);
 
-    return LONG2FIX(hash);
+    return ST2FIX(hash);
 }
 
 #define NUM_GE(x, y) RTEST(rb_num_coerce_relop((x), (y), idGE))

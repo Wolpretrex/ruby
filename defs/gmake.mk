@@ -185,6 +185,17 @@ $(MJIT_MIN_HEADER): $(mjit_min_headers) $(PREP)
 
 endif
 
+ifeq ($(if $(wildcard $(UNICODE_FILES) $(UNICODE_PROPERTY_FILES)),,\
+	   $(wildcard $(srcdir)/lib/unicode_normalize/tables.rb)),)
+# Needs the dependency when any Unicode data file exists, or
+# normalization tables script doesn't.  Otherwise, when the target
+# only exists, use it as-is.
+.PHONY: $(UNICODE_SRC_DATA_DIR)/.unicode-tables.time
+UNICODE_TABLES_TIMESTAMP =
+$(UNICODE_SRC_DATA_DIR)/.unicode-tables.time: \
+	$(UNICODE_FILES) $(UNICODE_PROPERTY_FILES)
+endif
+
 # GNU make treat the target as unmodified when its dependents get
 # updated but it is not updated, while others may not.
 $(srcdir)/revision.h: $(REVISION_H)

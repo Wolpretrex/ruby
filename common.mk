@@ -15,9 +15,9 @@ mflags = $(MFLAGS)
 gnumake_recursive =
 enable_shared = $(ENABLE_SHARED:no=)
 
-UNICODE_VERSION = 12.0.0
+UNICODE_VERSION = 12.1.0
 UNICODE_EMOJI_VERSION = 12.0
-UNICODE_BETA = NO
+UNICODE_BETA = YES
 
 ### set the following environment variable or uncomment the line if
 ### the Unicode data files should be updated completely on every update ('make up',...).
@@ -1371,12 +1371,14 @@ touch-unicode-files:
 	$(MAKEDIRS) $(UNICODE_SRC_DATA_DIR)
 	touch $(UNICODE_SRC_DATA_DIR)/.unicode-tables.time $(UNICODE_DATA_HEADERS)
 
+UNICODE_TABLES_TIMESTAMP = yes
 $(UNICODE_SRC_DATA_DIR)/.unicode-tables.time: $(srcdir)/tool/generic_erb.rb \
 		$(srcdir)/template/unicode_norm_gen.tmpl \
 		$(ALWAYS_UPDATE_UNICODE:yes=update-unicode)
 	$(Q) $(MAKE) $(@D)
 	$(Q) $(BASERUBY) $(srcdir)/tool/generic_erb.rb \
-		-c -t$@ -o $(srcdir)/lib/unicode_normalize/tables.rb \
+		-c $(UNICODE_TABLES_TIMESTAMP:yes=-t$@) \
+                -o $(srcdir)/lib/unicode_normalize/tables.rb \
 		-I $(srcdir) \
 		$(srcdir)/template/unicode_norm_gen.tmpl \
 		$(UNICODE_DATA_DIR) lib/unicode_normalize
