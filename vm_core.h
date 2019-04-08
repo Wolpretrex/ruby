@@ -433,7 +433,7 @@ struct rb_iseq_constant_body {
     const ID *local_table;		/* must free */
 
     /* catch table */
-    const struct iseq_catch_table *catch_table;
+    struct iseq_catch_table *catch_table;
 
     /* for child iseq */
     const struct rb_iseq_struct *parent_iseq;
