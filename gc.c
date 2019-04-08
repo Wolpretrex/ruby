@@ -4146,13 +4146,6 @@ free_stack_chunks(mark_stack_t *stack)
 static void
 push_mark_stack(mark_stack_t *stack, VALUE data)
 {
-#ifdef GC_COMPACT_DEBUG
-    if (BUILTIN_TYPE(data) == T_MOVED) {
-	VALUE dest = rb_gc_new_location(data);
-	fprintf(stderr, "<%s>", obj_info(dest));
-	rb_bug("moved item (%p -> %p (type: %d) should not be marked", (RVALUE *)data, (RVALUE *)dest, BUILTIN_TYPE(dest));
-    }
-#endif
     if (stack->index == stack->limit) {
         push_mark_stack_chunk(stack);
     }
@@ -8024,6 +8017,56 @@ rb_gc_compact(VALUE mod)
     return rb_gc_compact_stats(mod);
 }
 
+static void
+root_obj_check_moved_i(const char *category, VALUE obj, void *data)
+{
+    if (gc_object_moved_p(&rb_objspace, obj)) {
+        rb_bug("ROOT %s points to MOVED: %p -> %s\n", category, (void *)obj, obj_info(rb_gc_new_location(obj)));
+    }
+}
+
+static void
+reachable_object_check_moved_i(VALUE ref, void *data)
+{
+    VALUE parent = (VALUE)data;
+    if (gc_object_moved_p(&rb_objspace, ref)) {
+        rb_bug("Object %s points to MOVED: %p -> %s\n", obj_info(parent), (void *)ref, obj_info(rb_gc_new_location(ref)));
+    }
+}
+
+static int
+heap_check_moved_i(void *vstart, void *vend, size_t stride, void *data)
+{
+    VALUE v = (VALUE)vstart;
+    for (; v != (VALUE)vend; v += stride) {
+        if (gc_object_moved_p(&rb_objspace, v)) {
+            /* Moved object still on the heap, something may have a reference. */
+        } else {
+            void *poisoned = poisoned_object_p(v);
+            unpoison_object(v, false);
+
+            if (BUILTIN_TYPE(v) != T_NONE) {
+                rb_objspace_reachable_objects_from(v, reachable_object_check_moved_i, (void *)v);
+            }
+
+            if (poisoned) {
+                GC_ASSERT(BUILTIN_TYPE(v) == T_NONE);
+                poison_object(v);
+            }
+        }
+    }
+
+    return 0;
+}
+
+static VALUE
+gc_check_references_for_moved(VALUE dummy)
+{
+    rb_objspace_reachable_objects_from_root(root_obj_check_moved_i, NULL);
+    rb_objspace_each_objects(heap_check_moved_i, NULL);
+    return Qnil;
+}
+
 /*
  *  call-seq:
  *     GC.verify_compaction_references                  -> nil
@@ -8051,6 +8094,7 @@ gc_verify_compaction_references(VALUE dummy)
 
     stats = rb_gc_compact(dummy);
 
+    gc_check_references_for_moved(dummy);
     gc_verify_internal_consistency(dummy);
 
     return stats;
