@@ -7182,11 +7182,7 @@ gc_start_internal(int argc, VALUE *argv, VALUE self)
 static int
 gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 {
-    if (SPECIAL_CONST_P(obj) || BUILTIN_TYPE(obj) == T_NONE || BUILTIN_TYPE(obj) == T_ZOMBIE || rb_objspace_pinned_object_p(obj)) {
-	return FALSE;
-    }
-
-    if (FL_TEST(obj, FL_FINALIZE)) {
+    if (SPECIAL_CONST_P(obj)) {
 	return FALSE;
     }
 
@@ -7216,13 +7212,20 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 	case T_RATIONAL:
 	case T_NODE:
 	case T_CLASS:
+            if (FL_TEST(obj, FL_FINALIZE)) {
+                if (st_lookup(finalizer_table, obj, 0)) {
+                    return FALSE;
+                }
+            }
+            return !rb_objspace_pinned_object_p(obj);
 	    break;
+
 	default:
 	    rb_bug("gc_is_moveable_obj: unreachable (%d)", (int)BUILTIN_TYPE(obj));
 	    break;
     }
 
-    return TRUE;
+    return FALSE;
 }
 
 static int
