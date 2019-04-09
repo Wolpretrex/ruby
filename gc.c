@@ -7537,7 +7537,7 @@ hash_foreach_replace(st_data_t key, st_data_t value, st_data_t argp, int error)
     if(gc_object_moved_p(objspace, (VALUE)value)) {
 	return ST_REPLACE;
     }
-    return ST_CHECK;
+    return ST_CONTINUE;
 }
 
 static void
@@ -7558,7 +7558,7 @@ rb_gc_update_tbl_refs(st_table *ptr)
 static void
 gc_ref_update_hash(rb_objspace_t * objspace, VALUE v)
 {
-    gc_update_table_refs(objspace, rb_hash_tbl_raw(v));
+    rb_hash_stlike_foreach_with_replace(v, hash_foreach_replace, hash_replace_ref, (st_data_t)objspace);
 }
 
 void rb_update_st_references(struct st_table *ht)
