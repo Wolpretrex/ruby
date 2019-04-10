@@ -194,6 +194,9 @@ static ruby_gc_params_t gc_params = {
     FALSE,
 };
 
+static st_table *id_to_obj_tbl;
+static st_table *obj_to_id_tbl;
+
 /* GC_DEBUG:
  *  enable to embed GC debugging information.
  */
@@ -582,6 +585,7 @@ typedef struct rb_objspace {
 #if USE_RGENGC
 	size_t minor_gc_count;
 	size_t major_gc_count;
+        size_t object_id_collisions;
 #if RGENGC_PROFILE > 0
 	size_t total_generated_normal_object_count;
 	size_t total_generated_shady_object_count;
@@ -2222,6 +2226,18 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	FL_UNSET(obj, FL_EXIVAR);
     }
 
+    if (FL_TEST(obj, FL_SEEN_OBJ_ID)) {
+        VALUE id;
+
+        FL_UNSET(obj, FL_SEEN_OBJ_ID);
+
+        if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
+            gc_report(4, objspace, "Collecting %p -> %p\n", (void *)obj, (void *)obj_id_to_ref(id));
+            st_delete(obj_to_id_tbl, (st_data_t *)&obj, 0);
+            st_delete(id_to_obj_tbl, (st_data_t *)&id, 0);
+        }
+    }
+
 #if USE_RGENGC
     if (RVALUE_WB_UNPROTECTED(obj)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), obj);
 
@@ -3243,6 +3259,10 @@ id2ref(VALUE obj, VALUE objid)
     if (FLONUM_P(ptr)) return (VALUE)ptr;
     ptr = obj_id_to_ref(objid);
 
+    if (st_lookup(id_to_obj_tbl, objid, &ptr)) {
+        return ptr;
+    }
+
     if ((ptr % sizeof(RVALUE)) == (4 << 2)) {
         ID symid = ptr / sizeof(RVALUE);
         if (rb_id2str(symid) == 0)
@@ -3260,6 +3280,71 @@ id2ref(VALUE obj, VALUE objid)
 	rb_raise(rb_eRangeError, "%p is internal object", p0);
     }
     return (VALUE)ptr;
+}
+
+static VALUE
+rb_find_object_id(VALUE obj, VALUE (*get_heap_object_id)(VALUE))
+{
+    if (STATIC_SYM_P(obj)) {
+        return (SYM2ID(obj) * sizeof(RVALUE) + (4 << 2)) | FIXNUM_FLAG;
+    }
+    else if (FLONUM_P(obj)) {
+#if SIZEOF_LONG == SIZEOF_VOIDP
+	return LONG2NUM((SIGNED_VALUE)obj);
+#else
+	return LL2NUM((SIGNED_VALUE)obj);
+#endif
+    }
+    else if (SPECIAL_CONST_P(obj)) {
+	return LONG2NUM((SIGNED_VALUE)obj);
+    }
+
+    return get_heap_object_id(obj);
+}
+
+static VALUE
+cached_object_id(VALUE obj)
+{
+    VALUE id;
+
+    if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
+        gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p\n", (void*)obj);
+        return id;
+    }
+    else {
+        id = nonspecial_obj_id(obj);
+
+        while (1) {
+            /* id is the object id */
+            if (st_lookup(id_to_obj_tbl, (st_data_t)id, 0)) {
+                gc_report(4, &rb_objspace, "object_id called on %p, but there was a collision at %lu\n", (void*)obj, obj_id_to_ref(id));
+                rb_objspace_t *objspace = &rb_objspace;
+                objspace->profile.object_id_collisions++;
+                id += sizeof(VALUE);
+            }
+            else {
+                gc_report(4, &rb_objspace, "Initial insert: %p id: %lu\n", (void*)obj, obj_id_to_ref(id));
+                st_insert(obj_to_id_tbl, (st_data_t)obj, id);
+                st_insert(id_to_obj_tbl, (st_data_t)id, obj);
+                FL_SET(obj, FL_SEEN_OBJ_ID);
+                return id;
+            }
+        }
+    }
+    return nonspecial_obj_id(obj);
+}
+
+static VALUE
+nonspecial_obj_id_(VALUE obj)
+{
+    return nonspecial_obj_id(obj);
+}
+
+
+VALUE
+rb_memory_id(VALUE obj)
+{
+    return rb_find_object_id(obj, nonspecial_obj_id_);
 }
 
 /*
@@ -3318,20 +3403,8 @@ rb_obj_id(VALUE obj)
      *  24 if 32-bit, double is 8-byte aligned
      *  40 if 64-bit
      */
-    if (STATIC_SYM_P(obj)) {
-        return (SYM2ID(obj) * sizeof(RVALUE) + (4 << 2)) | FIXNUM_FLAG;
-    }
-    else if (FLONUM_P(obj)) {
-#if SIZEOF_LONG == SIZEOF_VOIDP
-	return LONG2NUM((SIGNED_VALUE)obj);
-#else
-	return LL2NUM((SIGNED_VALUE)obj);
-#endif
-    }
-    else if (SPECIAL_CONST_P(obj)) {
-	return LONG2NUM((SIGNED_VALUE)obj);
-    }
-    return nonspecial_obj_id(obj);
+
+    return rb_find_object_id(obj, cached_object_id);
 }
 
 #include "regint.h"
@@ -7288,6 +7361,7 @@ enum gc_stat_sym {
 #if USE_RGENGC
     gc_stat_sym_minor_gc_count,
     gc_stat_sym_major_gc_count,
+    gc_stat_sym_object_id_collisions,
     gc_stat_sym_remembered_wb_unprotected_objects,
     gc_stat_sym_remembered_wb_unprotected_objects_limit,
     gc_stat_sym_old_objects,
@@ -7363,6 +7437,7 @@ setup_gc_stat_symbols(void)
 	S(malloc_increase_bytes_limit);
 #if USE_RGENGC
 	S(minor_gc_count);
+        S(object_id_collisions);
 	S(major_gc_count);
 	S(remembered_wb_unprotected_objects);
 	S(remembered_wb_unprotected_objects_limit);
@@ -7535,6 +7610,7 @@ gc_stat_internal(VALUE hash_or_sym)
     SET(malloc_increase_bytes_limit, malloc_limit);
 #if USE_RGENGC
     SET(minor_gc_count, objspace->profile.minor_gc_count);
+    SET(object_id_collisions, objspace->profile.object_id_collisions);
     SET(major_gc_count, objspace->profile.major_gc_count);
     SET(remembered_wb_unprotected_objects, objspace->rgengc.uncollectible_wb_unprotected_objects);
     SET(remembered_wb_unprotected_objects_limit, objspace->rgengc.uncollectible_wb_unprotected_objects_limit);
@@ -10231,6 +10307,9 @@ Init_GC(void)
     VALUE rb_mObjSpace;
     VALUE rb_mProfiler;
     VALUE gc_constants;
+
+    id_to_obj_tbl = st_init_numtable();
+    obj_to_id_tbl = st_init_numtable();
 
     rb_mGC = rb_define_module("GC");
     rb_define_singleton_method(rb_mGC, "start", gc_start_internal, -1);
