@@ -3317,6 +3317,7 @@ cached_object_id(VALUE obj)
     rb_objspace_t *objspace = &rb_objspace;
 
     if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
+        assert(FL_TEST(obj, FL_SEEN_OBJ_ID));
         assert(id);
         if(id != nonspecial_obj_id(obj)) {
             fprintf(stderr, "id: %p nonspecial: %p\n", (void *)id, (void *)nonspecial_obj_id(obj));
@@ -3325,6 +3326,7 @@ cached_object_id(VALUE obj)
         return nonspecial_obj_id(obj);
     }
     else {
+        assert(!FL_TEST(obj, FL_SEEN_OBJ_ID));
         VALUE id2;
         id = nonspecial_obj_id(obj);
 
