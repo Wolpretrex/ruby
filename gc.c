@@ -3320,7 +3320,7 @@ cached_object_id(VALUE obj)
         assert(id);
         assert(id == nonspecial_obj_id(obj));
         gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p %lu\n", (void*)obj, obj_id_to_ref(id));
-        return id;
+        return nonspecial_obj_id(obj);
     }
     else {
         id = nonspecial_obj_id(obj);
@@ -3337,7 +3337,7 @@ cached_object_id(VALUE obj)
                 st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, id);
                 st_insert(objspace->id_to_obj_tbl, (st_data_t)id, obj);
                 FL_SET(obj, FL_SEEN_OBJ_ID);
-                return id;
+                return nonspecial_obj_id(obj);
             }
         }
     }
