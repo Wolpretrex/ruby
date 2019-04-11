@@ -3325,6 +3325,7 @@ cached_object_id(VALUE obj)
         return nonspecial_obj_id(obj);
     }
     else {
+        VALUE id2;
         id = nonspecial_obj_id(obj);
 
         while (1) {
@@ -3337,6 +3338,15 @@ cached_object_id(VALUE obj)
                 st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, id);
                 st_insert(objspace->id_to_obj_tbl, (st_data_t)id, obj);
                 FL_SET(obj, FL_SEEN_OBJ_ID);
+
+                if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id2)) {
+                    assert(id2);
+                    if(id2 != nonspecial_obj_id(obj)) {
+                        fprintf(stderr, "id: %p nonspecial: %p\n", (void *)id2, (void *)nonspecial_obj_id(obj));
+                    }
+                    assert(id2 == nonspecial_obj_id(obj));
+                    return nonspecial_obj_id(obj);
+                }
                 return nonspecial_obj_id(obj);
             }
         }
