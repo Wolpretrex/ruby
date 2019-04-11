@@ -194,9 +194,6 @@ static ruby_gc_params_t gc_params = {
     FALSE,
 };
 
-static st_table *id_to_obj_tbl;
-static st_table *obj_to_id_tbl;
-
 /* GC_DEBUG:
  *  enable to embed GC debugging information.
  */
@@ -647,6 +644,9 @@ typedef struct rb_objspace {
     } rincgc;
 #endif
 #endif /* USE_RGENGC */
+
+    st_table *id_to_obj_tbl;
+    st_table *obj_to_id_tbl;
 
 #if GC_DEBUG_STRESS_TO_CLASS
     VALUE stress_to_class;
@@ -1382,8 +1382,8 @@ rb_objspace_free(rb_objspace_t *objspace)
 	objspace->eden_heap.total_pages = 0;
 	objspace->eden_heap.total_slots = 0;
     }
-    st_free_table(id_to_obj_tbl);
-    st_free_table(obj_to_id_tbl);
+    st_free_table(objspace->id_to_obj_tbl);
+    st_free_table(objspace->obj_to_id_tbl);
     free_stack_chunks(&objspace->mark_stack);
 #if !(defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE)
     if (objspace == &rb_objspace) return;
@@ -2233,10 +2233,10 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 
         FL_UNSET(obj, FL_SEEN_OBJ_ID);
 
-        if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
+        if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
             gc_report(4, objspace, "Collecting %p -> %p\n", (void *)obj, (void *)obj_id_to_ref(id));
-            st_delete(obj_to_id_tbl, (st_data_t *)&obj, 0);
-            st_delete(id_to_obj_tbl, (st_data_t *)&id, 0);
+            st_delete(objspace->obj_to_id_tbl, (st_data_t *)&obj, 0);
+            st_delete(objspace->id_to_obj_tbl, (st_data_t *)&id, 0);
         }
     }
 
@@ -2530,8 +2530,8 @@ Init_heap(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    id_to_obj_tbl = st_init_numtable();
-    obj_to_id_tbl = st_init_numtable();
+    objspace->id_to_obj_tbl = st_init_numtable();
+    objspace->obj_to_id_tbl = st_init_numtable();
 
     gc_stress_set(objspace, ruby_initial_gc_stress);
 
@@ -3264,7 +3264,7 @@ id2ref(VALUE obj, VALUE objid)
     if (FLONUM_P(ptr)) return (VALUE)ptr;
     ptr = obj_id_to_ref(objid);
 
-    if (st_lookup(id_to_obj_tbl, objid, &ptr)) {
+    if (st_lookup(objspace->id_to_obj_tbl, objid, &ptr)) {
         return ptr;
     }
 
@@ -3311,8 +3311,9 @@ static VALUE
 cached_object_id(VALUE obj)
 {
     VALUE id;
+    rb_objspace_t *objspace = &rb_objspace;
 
-    if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
+    if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
         gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p %lu\n", (void*)obj, obj_id_to_ref(id));
         assert(id);
         return id;
@@ -3323,16 +3324,15 @@ cached_object_id(VALUE obj)
 
         while (1) {
             /* id is the object id */
-            if (st_lookup(id_to_obj_tbl, (st_data_t)id, 0)) {
-                gc_report(4, &rb_objspace, "object_id called on %p, but there was a collision at %lu\n", (void*)obj, obj_id_to_ref(id));
-                rb_objspace_t *objspace = &rb_objspace;
+            if (st_lookup(objspace->id_to_obj_tbl, (st_data_t)id, 0)) {
+                gc_report(4, objspace, "object_id called on %p, but there was a collision at %lu\n", (void*)obj, obj_id_to_ref(id));
                 objspace->profile.object_id_collisions++;
                 id += sizeof(VALUE);
             }
             else {
-                gc_report(4, &rb_objspace, "Initial insert: %p id: %lu\n", (void*)obj, obj_id_to_ref(id));
-                st_insert(obj_to_id_tbl, (st_data_t)obj, id);
-                st_insert(id_to_obj_tbl, (st_data_t)id, obj);
+                gc_report(4, objspace, "Initial insert: %p id: %lu\n", (void*)obj, obj_id_to_ref(id));
+                st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, id);
+                st_insert(objspace->id_to_obj_tbl, (st_data_t)id, obj);
                 FL_SET(obj, FL_SEEN_OBJ_ID);
                 return id;
             }
