@@ -3343,6 +3343,7 @@ cached_object_id(VALUE obj)
                     assert(id2);
                     if(id2 != nonspecial_obj_id(obj)) {
                         fprintf(stderr, "id: %p nonspecial: %p\n", (void *)id2, (void *)nonspecial_obj_id(obj));
+                        fprintf(stderr, "size: %lu VALUE: %lu\n", sizeof(st_data_t), sizeof(VALUE));
                     }
                     assert(id2 == nonspecial_obj_id(obj));
                     return nonspecial_obj_id(obj);
