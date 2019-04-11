@@ -3331,6 +3331,7 @@ cached_object_id(VALUE obj)
                 id += sizeof(VALUE);
             }
             else {
+                return id;
                 gc_report(4, objspace, "Initial insert: %p id: %lu\n", (void*)obj, obj_id_to_ref(id));
                 st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, id);
                 st_insert(objspace->id_to_obj_tbl, (st_data_t)id, obj);
