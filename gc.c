@@ -3407,7 +3407,7 @@ rb_obj_id(VALUE obj)
      *  40 if 64-bit
      */
 
-    return rb_find_object_id(obj, cached_object_id);
+    return rb_find_object_id(obj, nonspecial_obj_id_);
 }
 
 #include "regint.h"
