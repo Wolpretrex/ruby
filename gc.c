@@ -3311,11 +3311,13 @@ cached_object_id(VALUE obj)
     VALUE id;
 
     if (st_lookup(obj_to_id_tbl, (st_data_t)obj, &id)) {
-        gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p\n", (void*)obj);
+        gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p %lu\n", (void*)obj, obj_id_to_ref(id));
+        assert(id);
         return id;
     }
     else {
         id = nonspecial_obj_id(obj);
+        return id;
 
         while (1) {
             /* id is the object id */
@@ -3407,7 +3409,7 @@ rb_obj_id(VALUE obj)
      *  40 if 64-bit
      */
 
-    return rb_find_object_id(obj, nonspecial_obj_id_);
+    return rb_find_object_id(obj, cached_object_id);
 }
 
 #include "regint.h"
