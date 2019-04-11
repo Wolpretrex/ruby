@@ -2234,8 +2234,9 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         FL_UNSET(obj, FL_SEEN_OBJ_ID);
 
         if (st_delete(objspace->obj_to_id_tbl, (st_data_t *)&obj, &id)) {
-            gc_report(4, objspace, "Collecting %p -> %p\n", (void *)obj, (void *)obj_id_to_ref(id));
             assert(id);
+            assert(id == nonspecial_obj_id(obj));
+            gc_report(4, objspace, "Collecting %p -> %p\n", (void *)obj, (void *)obj_id_to_ref(id));
             st_delete(objspace->id_to_obj_tbl, (st_data_t *)&id, NULL);
         } else {
             /* rb_bug("Object ID see, but not in mapping table: %s\n", obj_info(obj)); */
@@ -3316,8 +3317,9 @@ cached_object_id(VALUE obj)
     rb_objspace_t *objspace = &rb_objspace;
 
     if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
-        gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p %lu\n", (void*)obj, obj_id_to_ref(id));
         assert(id);
+        assert(id == nonspecial_obj_id(obj));
+        gc_report(4, &rb_objspace, "Second time object_id was called on this object: %p %lu\n", (void*)obj, obj_id_to_ref(id));
         return id;
     }
     else {
@@ -3331,11 +3333,11 @@ cached_object_id(VALUE obj)
                 id += sizeof(VALUE);
             }
             else {
-                FL_SET(obj, FL_SEEN_OBJ_ID);
-                return id;
                 gc_report(4, objspace, "Initial insert: %p id: %lu\n", (void*)obj, obj_id_to_ref(id));
                 st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, id);
                 st_insert(objspace->id_to_obj_tbl, (st_data_t)id, obj);
+                FL_SET(obj, FL_SEEN_OBJ_ID);
+                return id;
             }
         }
     }
