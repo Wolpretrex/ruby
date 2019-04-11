@@ -2233,10 +2233,10 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 
         FL_UNSET(obj, FL_SEEN_OBJ_ID);
 
-        if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
+        if (st_delete(objspace->obj_to_id_tbl, (st_data_t *)&obj, &id)) {
             gc_report(4, objspace, "Collecting %p -> %p\n", (void *)obj, (void *)obj_id_to_ref(id));
-            st_delete(objspace->obj_to_id_tbl, (st_data_t *)&obj, 0);
-            st_delete(objspace->id_to_obj_tbl, (st_data_t *)&id, 0);
+            assert(id);
+            st_delete(objspace->id_to_obj_tbl, (st_data_t *)&id, NULL);
         } else {
             /* rb_bug("Object ID see, but not in mapping table: %s\n", obj_info(obj)); */
         }
