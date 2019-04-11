@@ -3347,6 +3347,8 @@ cached_object_id(VALUE obj)
                     }
                     assert(id2 == nonspecial_obj_id(obj));
                     return nonspecial_obj_id(obj);
+                } else {
+                    rb_bug("obj should be in table\n");
                 }
                 return nonspecial_obj_id(obj);
             }
