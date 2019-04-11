@@ -2528,6 +2528,9 @@ Init_heap(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    id_to_obj_tbl = st_init_numtable();
+    obj_to_id_tbl = st_init_numtable();
+
     gc_stress_set(objspace, ruby_initial_gc_stress);
 
 #if RGENGC_ESTIMATE_OLDMALLOC
@@ -10307,9 +10310,6 @@ Init_GC(void)
     VALUE rb_mObjSpace;
     VALUE rb_mProfiler;
     VALUE gc_constants;
-
-    id_to_obj_tbl = st_init_numtable();
-    obj_to_id_tbl = st_init_numtable();
 
     rb_mGC = rb_define_module("GC");
     rb_define_singleton_method(rb_mGC, "start", gc_start_internal, -1);
