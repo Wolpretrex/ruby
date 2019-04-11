@@ -3333,6 +3333,7 @@ cached_object_id(VALUE obj)
             if (st_lookup(objspace->id_to_obj_tbl, (st_data_t)id, 0)) {
                 objspace->profile.object_id_collisions++;
                 id += sizeof(VALUE);
+                rb_bug("bug if collision\n");
             }
             else {
                 st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, id);
